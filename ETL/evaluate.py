@@ -500,109 +500,25 @@ def calculate_component_scores(dataset: Dict[str, Any]) -> Dict[str, Any]:
 # Note: human_approvals table from original file is out of scope (not implemented)
 # ────────────────────────────────────────────────────────────
 
-def score_description(llm_client, dataset: Dict[str, Any]) -> Dict[str, Any]:
+def build_evaluation_prompt_json(dataset: Dict[str, Any]) -> str:
     """
-    Use LLM to rate description clarity on a 1-5 scale.
+    Build consolidated JSON-structured prompt for all LLM evaluations.
+
+    OPTIMIZED: Requests all 4 evaluations in a single prompt to reduce API calls.
+
+    Requests:
+    1. Description clarity scoring (1-5 + feedback)
+    2. Description improvement suggestion
+    3. Tag relevance scoring (1-5 + feedback)
+    4. Tag suggestions (3-5 tags)
 
     Args:
-        llm_client: Configured LLM client (from config.get_llm_client())
         dataset: Dataset dictionary from ODP_datasets table
 
     Returns:
-        Dictionary with:
-        - score (int): 1-5 rating
-        - feedback (str): Qualitative feedback
+        JSON-formatted prompt string
     """
-    title = dataset.get('title', 'N/A')
-    description = dataset.get('description', '')
-
-    # Parse column names for context
-    try:
-        cols = json.loads(dataset.get('columns_names', '[]'))
-    except json.JSONDecodeError:
-        cols = []
-
-    prompt = f"""
-Dataset title: "{title}"
-Description: "{description}"
-Columns: {', '.join(cols[:10])} {'...' if len(cols) > 10 else ''}
-
-Rate the description clarity on a scale of 1 to 5:
-1 = Missing or completely unclear
-2 = Vague, lacks essential details
-3 = Basic but incomplete
-4 = Clear and informative
-5 = Excellent, comprehensive
-
-Provide ONLY a number from 1 to 5, followed by a brief one-sentence feedback.
-Format: <score>|<feedback>
-Example: 3|Description is basic but lacks detail about data sources.
-"""
-
-    try:
-        response = llm_client.call_llm(prompt)
-        parts = response.strip().split('|', 1)
-        score = int(parts[0].strip())
-        feedback = parts[1].strip() if len(parts) > 1 else "No feedback provided"
-        return {"score": score, "feedback": feedback}
-    except Exception as e:
-        logger.warning(f"Failed to score description: {e}")
-        return {"score": 3, "feedback": f"LLM scoring failed: {str(e)}"}
-
-
-def suggest_description(llm_client, dataset: Dict[str, Any]) -> str:
-    """
-    Generate an improved description for the dataset.
-
-    Args:
-        llm_client: Configured LLM client
-        dataset: Dataset dictionary from ODP_datasets table
-
-    Returns:
-        Suggested improved description string
-    """
-    title = dataset.get('title', 'N/A')
-    current_desc = dataset.get('description', '')
-
-    try:
-        cols = json.loads(dataset.get('columns_names', '[]'))
-    except json.JSONDecodeError:
-        cols = []
-
-    prompt = f"""
-Dataset title: "{title}"
-Current description: "{current_desc}"
-Columns: {', '.join(cols[:10])} {'...' if len(cols) > 10 else ''}
-
-Write a concise, informative description (2-3 sentences) that:
-- Clearly explains what data this dataset contains
-- Mentions key fields or metrics
-- Describes potential use cases or purpose
-
-Provide ONLY the improved description, no preamble.
-"""
-
-    try:
-        response = llm_client.call_llm(prompt)
-        return response.strip()
-    except Exception as e:
-        logger.warning(f"Failed to generate description suggestion: {e}")
-        return f"Unable to generate suggestion: {str(e)}"
-
-
-def score_tag_match(llm_client, dataset: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Use LLM to rate tag relevance on a 1-5 scale.
-
-    Args:
-        llm_client: Configured LLM client
-        dataset: Dataset dictionary from ODP_datasets table
-
-    Returns:
-        Dictionary with:
-        - score (int): 1-5 rating
-        - feedback (str): Qualitative feedback
-    """
+    # Extract dataset metadata
     title = dataset.get('title', 'N/A')
     description = dataset.get('description', '')
 
@@ -611,90 +527,91 @@ def score_tag_match(llm_client, dataset: Dict[str, Any]) -> Dict[str, Any]:
     except json.JSONDecodeError:
         tags = []
 
-    tag_str = ', '.join(tags) if tags else '(no tags)'
-
-    prompt = f"""
-Dataset title: "{title}"
-Description: "{description}"
-Tags: {tag_str}
-
-Rate how well the tags match the dataset content on a scale of 1 to 5:
-1 = No tags or completely irrelevant
-2 = Generic or mostly irrelevant
-3 = Somewhat relevant but could be better
-4 = Relevant and useful
-5 = Highly specific and relevant
-
-Provide ONLY a number from 1 to 5, followed by a brief one-sentence feedback.
-Format: <score>|<feedback>
-Example: 4|Tags are relevant and aid discoverability.
-"""
-
     try:
-        response = llm_client.call_llm(prompt)
-        parts = response.strip().split('|', 1)
-        score = int(parts[0].strip())
-        feedback = parts[1].strip() if len(parts) > 1 else "No feedback provided"
-        return {"score": score, "feedback": feedback}
-    except Exception as e:
-        logger.warning(f"Failed to score tags: {e}")
-        return {"score": 3, "feedback": f"LLM scoring failed: {str(e)}"}
-
-
-def suggest_tags(llm_client, dataset: Dict[str, Any]) -> list:
-    """
-    Generate 3-5 relevant tags for the dataset.
-
-    Args:
-        llm_client: Configured LLM client
-        dataset: Dataset dictionary from ODP_datasets table
-
-    Returns:
-        List of suggested tag strings
-    """
-    title = dataset.get('title', 'N/A')
-    description = dataset.get('description', '')
-
-    try:
-        current_tags = json.loads(dataset.get('tags', '[]'))
+        cols = json.loads(dataset.get('columns_names', '[]'))
     except json.JSONDecodeError:
-        current_tags = []
+        cols = []
 
-    current_tag_str = ', '.join(current_tags) if current_tags else '(none)'
+    # Format context data
+    tag_str = ', '.join(tags) if tags else '(no tags)'
+    col_str = ', '.join(cols[:10])
+    if len(cols) > 10:
+        col_str += ', ...'
 
-    prompt = f"""
-Dataset title: "{title}"
-Description: "{description}"
-Current tags: {current_tag_str}
+    # Build comprehensive JSON prompt
+    prompt = f"""You are evaluating the metadata quality of an open data portal dataset.
 
-Suggest 3-5 specific, relevant tags that would help users discover this dataset.
-Tags should be:
-- Specific to the domain/topic
-- Useful for search and filtering
-- Not too generic (avoid tags like "data", "dataset")
+DATASET INFORMATION:
+- Title: "{title}"
+- Description: "{description}"
+- Tags: {tag_str}
+- Columns: {col_str}
 
-Provide ONLY the tags, comma-separated, no preamble.
-Example: public-health, covid-19, testing-sites, cambridge
+EVALUATION TASKS:
+Please evaluate this dataset across 4 dimensions and respond in strict JSON format.
+
+1. DESCRIPTION CLARITY (score 1-5):
+   - 1 = Missing or completely unclear
+   - 2 = Vague, lacks essential details
+   - 3 = Basic but incomplete
+   - 4 = Clear and informative
+   - 5 = Excellent, comprehensive
+
+   Provide a score and one-sentence feedback explaining your rating.
+
+2. DESCRIPTION SUGGESTION:
+   Write an improved description (2-3 sentences) that:
+   - Clearly explains what data this dataset contains
+   - Mentions key fields or metrics
+   - Describes potential use cases or purpose
+
+3. TAG RELEVANCE (score 1-5):
+   - 1 = No tags or completely irrelevant
+   - 2 = Generic or mostly irrelevant
+   - 3 = Somewhat relevant but could be better
+   - 4 = Relevant and useful
+   - 5 = Highly specific and relevant
+
+   Provide a score and one-sentence feedback explaining your rating.
+
+4. TAG SUGGESTIONS:
+   Suggest 3-5 specific, relevant tags that would help users discover this dataset.
+   - Specific to the domain/topic
+   - Useful for search and filtering
+   - Not too generic (avoid tags like "data", "dataset")
+
+REQUIRED JSON RESPONSE FORMAT:
+{{
+  "description_score": <integer 1-5>,
+  "description_feedback": "<one sentence explaining the score>",
+  "description_suggestion": "<improved 2-3 sentence description>",
+  "tag_score": <integer 1-5>,
+  "tag_feedback": "<one sentence explaining the score>",
+  "tag_suggestions": ["<tag1>", "<tag2>", "<tag3>", ...]
+}}
+
+IMPORTANT:
+- Respond ONLY with the JSON object, no additional text
+- Ensure all fields are present
+- Use double quotes for strings
+- tag_suggestions must be an array of 3-5 strings
+- Scores must be integers between 1 and 5
 """
 
-    try:
-        response = llm_client.call_llm(prompt)
-        tags = [t.strip() for t in response.strip().split(',')]
-        return tags[:5]  # Limit to 5 tags
-    except Exception as e:
-        logger.warning(f"Failed to suggest tags: {e}")
-        return []
+    return prompt
 
 
 def enrich_with_llm(dataset: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Orchestrate all LLM enrichment calls for a dataset.
+    Perform LLM-based metadata enrichment using single JSON-structured API call.
 
-    This function performs:
-    1. Description scoring (1-5)
-    2. Description suggestion
-    3. Tag scoring (1-5)
-    4. Tag suggestion
+    OPTIMIZED: Makes 1 API call instead of 4 separate calls.
+
+    Evaluates:
+    1. Description clarity (1-5 score + feedback)
+    2. Description improvement suggestion
+    3. Tag relevance (1-5 score + feedback)
+    4. Tag suggestions (3-5 tags)
 
     Args:
         dataset: Dataset dictionary from ODP_datasets table
@@ -718,26 +635,61 @@ def enrich_with_llm(dataset: Dict[str, Any]) -> Dict[str, Any]:
 
         llm_client = get_llm_client()
 
-        # Score and suggest for description
-        desc_result = score_description(llm_client, dataset)
-        desc_suggestion = suggest_description(llm_client, dataset)
+        # Build consolidated JSON prompt
+        prompt = build_evaluation_prompt_json(dataset)
 
-        # Score and suggest for tags
-        tag_result = score_tag_match(llm_client, dataset)
-        tag_suggestions = suggest_tags(llm_client, dataset)
+        # Make single API call
+        logger.debug(f"Calling LLM for dataset {dataset.get('dataset_id')}")
+        response = llm_client.call_llm(prompt)
 
+        # Parse JSON response
+        try:
+            result = json.loads(response)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM JSON response: {e}")
+            logger.debug(f"Raw response: {response[:500]}")
+            raise ValueError(f"LLM did not return valid JSON: {e}")
+
+        # Validate required fields
+        required_fields = [
+            'description_score', 'description_feedback', 'description_suggestion',
+            'tag_score', 'tag_feedback', 'tag_suggestions'
+        ]
+
+        missing_fields = [f for f in required_fields if f not in result]
+        if missing_fields:
+            raise ValueError(f"LLM response missing fields: {missing_fields}")
+
+        # Validate score ranges
+        if not (1 <= result['description_score'] <= 5):
+            logger.warning(f"Description score out of range: {result['description_score']}, clamping to 1-5")
+            result['description_score'] = max(1, min(5, result['description_score']))
+
+        if not (1 <= result['tag_score'] <= 5):
+            logger.warning(f"Tag score out of range: {result['tag_score']}, clamping to 1-5")
+            result['tag_score'] = max(1, min(5, result['tag_score']))
+
+        # Validate tag_suggestions is a list
+        if not isinstance(result['tag_suggestions'], list):
+            logger.warning(f"tag_suggestions is not a list: {type(result['tag_suggestions'])}")
+            result['tag_suggestions'] = []
+
+        # Limit to 5 tags
+        tag_suggestions = result['tag_suggestions'][:5]
+
+        # Return in schema format (note: tag_suggestion is singular, not plural)
         return {
-            'description_score': desc_result['score'],
-            'description_feedback': desc_result['feedback'],
-            'description_suggestion': desc_suggestion,
-            'tag_score': tag_result['score'],
-            'tag_feedback': tag_result['feedback'],
-            'tag_suggestion': json.dumps(tag_suggestions)  # Store as JSON array
+            'description_score': result['description_score'],
+            'description_feedback': result['description_feedback'],
+            'description_suggestion': result['description_suggestion'],
+            'tag_score': result['tag_score'],
+            'tag_feedback': result['tag_feedback'],
+            'tag_suggestion': json.dumps(tag_suggestions)  # Store as JSON array string
         }
 
     except Exception as e:
         logger.error(f"LLM enrichment failed for {dataset.get('dataset_id')}: {e}")
-        # Return NULL values on failure
+        # Return NULL values on failure (graceful degradation)
         return {
             'description_score': None,
             'description_feedback': None,
