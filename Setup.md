@@ -51,7 +51,7 @@ export BASE_DIR="$(pwd)"
 python pipeline.py
 
 # Dashboard only (requires DB to exist)
-streamlit run app.py
+streamlit run streamlit/app.py
 ```
 
 ---
@@ -76,7 +76,6 @@ streamlit run app.py
 | Department          | 10%    | Present=100, missing=0                       |
 | Category            | 10%    | Present=100, missing=0                       |
 | Freshness           | 20%    | Dynamic per updateFrequency field            |
-| Column metadata     | 5%     | >=50% columns described=100, else 0         |
 
 Health bands: Good (80-100) | Fair (60-79) | Poor (40-59) | Critical (0-39)
 

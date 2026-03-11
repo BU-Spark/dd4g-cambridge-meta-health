@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-BASE_DIR = os.environ.get("BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.environ.get("BASE_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH  = os.path.join(BASE_DIR, "data", "cambridge_metadata.db")
 
 st.markdown("""
@@ -44,7 +44,6 @@ def load_data() -> pd.DataFrame:
             h.missing_department, h.missing_category,
             h.is_stale, h.days_overdue, h.freshness_score,
             h.desc_score, h.tag_score, h.license_score,
-            h.col_metadata_score,
             l.llm_desc_score, l.llm_desc_feedback,
             l.llm_suggested_desc, l.llm_suggested_tags,l.llm_tag_alignment_note,l.llm_status
         FROM datasets d
@@ -265,7 +264,7 @@ with tab2:
 with tab3:
     st.subheader("AI-Suggested Descriptions — Human Review")
     st.caption("Review AI suggestions carefully. Edit before approving if needed.")
-    reviewer = st.text_input("Your name (required for audit trail)", key="reviewer_desc")
+    reviewer = "Automated"
 
     needs_review = filtered[filtered["llm_status"] == "pending_review"].sort_values("health_score")
 
@@ -288,17 +287,11 @@ with tab3:
 
                 ca, cb, cc = st.columns(3)
                 if ca.button("\u2705 Approve", key=f"app_{row['id']}"):
-                    if not reviewer:
-                        ca.warning("Enter your name first.")
-                    else:
-                        save_approval(row["id"], edited_desc, row["llm_suggested_tags"], "approved", reviewer, edit_note)
-                        ca.success("Approved!")
+                    save_approval(row["id"], edited_desc, row["llm_suggested_tags"], "approved", reviewer, edit_note)
+                    ca.success("Approved!")
                 if cb.button("\u270f\ufe0f Approve Edited", key=f"edit_{row['id']}"):
-                    if not reviewer:
-                        cb.warning("Enter your name first.")
-                    else:
-                        save_approval(row["id"], edited_desc, row["llm_suggested_tags"], "edited", reviewer, edit_note)
-                        cb.success("Saved as edited!")
+                    save_approval(row["id"], edited_desc, row["llm_suggested_tags"], "edited", reviewer, edit_note)
+                    cb.success("Saved as edited!")
                 if cc.button("\u274c Reject", key=f"rej_{row['id']}"):
                     save_approval(row["id"], None, None, "rejected", reviewer, edit_note)
                     cc.warning("Rejected.")
@@ -306,7 +299,7 @@ with tab3:
 # ── TAB 4: AI TAGS ────────────────────────────────────────────────────────────
 with tab4:
     st.subheader("\U0001f3f7\ufe0f AI-Suggested Tags — Datasets with Missing Tags")
-    reviewer_tags = st.text_input("Your name", key="reviewer_tags")
+    reviewer_tags = "Automated"
     tag_df = filtered[filtered["missing_tags"] == 1].sort_values("health_score")
 
     if tag_df.empty:
@@ -334,11 +327,8 @@ with tab4:
                     ca, cb = st.columns(2)
 
                     if ca.button("\u2705 Approve Tags", key=f"tappr_{row['id']}"):
-                        if not reviewer_tags:
-                            ca.warning("Enter your name first.")
-                        else:
-                            save_approval(row["id"], None, raw_tags, "approved", reviewer_tags)
-                            ca.success("Tags approved!")
+                        save_approval(row["id"], None, raw_tags, "approved", reviewer_tags)
+                        ca.success("Tags approved!")
                     if cb.button("\u274c Reject Tags", key=f"trej_{row['id']}"):
                         save_approval(row["id"], None, None, "rejected", reviewer_tags)
                         cb.warning("Rejected.")
@@ -410,12 +400,11 @@ with tab6:
         "Tags":          filtered["tag_score"].mean(),
         "License":       filtered["license_score"].mean(),
         "Freshness":     filtered["freshness_score"].mean(),
-        "Col Metadata":  filtered["col_metadata_score"].mean(),
     }
     fig_dims = go.Figure(go.Bar(
         x=list(dim_scores.keys()),
         y=[round(v, 1) if not pd.isna(v) else 0 for v in dim_scores.values()],
-        marker_color=["#3498db","#9b59b6","#2ecc71","#e67e22","#1abc9c"]
+        marker_color=["#3498db","#9b59b6","#2ecc71","#e67e22"]
     ))
     fig_dims.update_layout(title="Average Sub-Score by Dimension (0-100)",
                            yaxis=dict(range=[0, 100]),

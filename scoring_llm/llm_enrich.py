@@ -12,6 +12,7 @@ DB_PATH  = os.path.join(BASE_DIR, "data", "cambridge_metadata.db")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+
 def ask_gemini(prompt: str, retries: int = 4) -> str:
     for attempt in range(retries):
         try:
@@ -98,6 +99,7 @@ Metadata:
 Return ONLY the description text or INSUFFICIENT_DATA. No preamble, no explanation."""
 
     return ask_gemini(prompt)
+
 
 def score_tag_match(name, description, tags):
     if not tags or not str(tags).strip():
@@ -223,14 +225,14 @@ def update_health_score_with_llm(conn, dataset_id: str, llm_desc_score: int):
 
     row = conn.execute("""
         SELECT tag_score, license_score, dept_score, category_score,
-               freshness_score, col_metadata_score
+               freshness_score
         FROM health_flags WHERE id = ?
     """, (dataset_id,)).fetchone()
 
     if not row:
         return
 
-    tag_s, lic_s, dept_s, cat_s, fresh_s, col_s = row
+    tag_s, lic_s, dept_s, cat_s, fresh_s = row
 
     health = round(
         0.25 * desc_score_normalized +
@@ -238,8 +240,7 @@ def update_health_score_with_llm(conn, dataset_id: str, llm_desc_score: int):
         0.15 * lic_s +
         0.10 * dept_s +
         0.10 * cat_s +
-        0.20 * fresh_s +
-        0.05 * col_s,
+        0.25 * fresh_s,
         1
     )
     band = "Good" if health >= 80 else "Fair" if health >= 60 else "Poor" if health >= 40 else "Critical"
@@ -283,7 +284,7 @@ def run_llm_enrichment(only_low_scores: bool = True, score_threshold: float = 65
         suggested_tags_list = suggest_tags(row["name"], row["description"], row["category"])
         suggested_tags_str  = json.dumps(suggested_tags_list)
 
-        # Step 3 — Score the tag alignment  ← NEW
+        # Step 3 — Score the tag alignment
         tag_score, tag_alignment_note = score_tag_match(
             row["name"], row["description"], suggested_tags_str
         )
@@ -297,16 +298,15 @@ def run_llm_enrichment(only_low_scores: bool = True, score_threshold: float = 65
                 row["name"], row["description"],
                 row["department"], row["category"], columns_str
             )
-
-        # Guard against API error strings being stored in DB
-        if suggested_desc and suggested_desc.startswith("ERROR:"):
-            suggested_desc = None
-            llm_status = "pending_review"
-        elif suggested_desc == "INSUFFICIENT_DATA":
-            suggested_desc = None
-            llm_status = "insufficient_data"
-        else:
-            llm_status = "pending_review"
+            # Guard only runs when suggest_description was called
+            if suggested_desc and suggested_desc.startswith("ERROR:"):
+                suggested_desc = None
+                llm_status = "pending_review"
+            elif suggested_desc == "INSUFFICIENT_DATA":
+                suggested_desc = None
+                llm_status = "insufficient_data"
+            else:
+                llm_status = "pending_review"
 
         # Step 5 — Save to DB
         conn.execute("""
@@ -314,7 +314,7 @@ def run_llm_enrichment(only_low_scores: bool = True, score_threshold: float = 65
         """, (
             row["id"], desc_score, feedback,
             suggested_desc, suggested_tags_str,
-            tag_alignment_note,      # ← now actually saved, was None before
+            tag_alignment_note,
             llm_status,
             datetime.now(timezone.utc).isoformat()
         ))

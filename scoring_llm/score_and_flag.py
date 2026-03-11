@@ -22,6 +22,7 @@ FREQUENCY_THRESHOLDS = {
     "never":       None,
 }
 
+
 def compute_staleness(row) -> dict:
     """Dynamically evaluate staleness relative to dataset's own update frequency."""
     freq = (row.get("updateFrequency") or "").strip().lower()
@@ -62,8 +63,6 @@ def compute_tag_score(tags: list) -> float:
     else:        return 100.0
 
 
-
-
 def health_band(score: float) -> str:
     if score >= 80: return "Good"
     elif score >= 60: return "Fair"
@@ -72,6 +71,7 @@ def health_band(score: float) -> str:
 
 
 def create_health_flags_table(conn):
+    conn.execute("DROP TABLE IF EXISTS health_flags")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS health_flags (
             id TEXT PRIMARY KEY,
@@ -88,7 +88,6 @@ def create_health_flags_table(conn):
             dept_score REAL,
             category_score REAL,
             freshness_score REAL,
-            col_metadata_score REAL,
             health_score REAL,
             health_band TEXT,
             scored_at TEXT
@@ -105,8 +104,7 @@ def score_datasets():
       License presence     15%  (binary)
       Department           10%  (binary)
       Category             10%  (binary)
-      Freshness            20%  (dynamic per updateFrequency)
-      
+      Freshness            25%  (dynamic per updateFrequency)
     """
     conn = sqlite3.connect(DB_PATH)
     create_health_flags_table(conn)
@@ -118,14 +116,12 @@ def score_datasets():
         "license":   0.15,
         "dept":      0.10,
         "category":  0.10,
-        "freshness": 0.20,
-        "col_meta":  0.05,
+        "freshness": 0.25,
     }
 
     records = []
     for _, row in df.iterrows():
-        tags     = json.loads(row["tags"]) if row["tags"] else []
-        col_desc = json.loads(row["col_descriptions"]) if row["col_descriptions"] else []
+        tags = json.loads(row["tags"]) if row["tags"] else []
 
         missing_desc = 0 if (pd.notna(row["description"]) and str(row["description"]).strip()) else 1
         missing_tags = 0 if len(tags) > 0 else 1
@@ -134,46 +130,42 @@ def score_datasets():
         missing_cat  = 0 if (pd.notna(row["category"]) and str(row["category"]).strip()) else 1
 
         # Description scoring delegated to LLM (llm_enrich.py will populate this)
-        desc_score_raw = 0.0 if missing_desc else 50.0
-
+        desc_score_raw     = 0.0 if missing_desc else 50.0
         tag_score_raw      = compute_tag_score(tags)
         license_score_raw  = 0.0 if missing_lic  else 100.0
         dept_score_raw     = 0.0 if missing_dept else 100.0
         category_score_raw = 0.0 if missing_cat  else 100.0
         staleness          = compute_staleness(row)
         freshness_raw      = staleness["freshness_score"]
-        col_meta_raw       = compute_col_metadata_score(col_desc)
 
         health_score = round(
-            WEIGHTS["desc"]     * desc_score_raw +
-            WEIGHTS["tags"]     * tag_score_raw +
-            WEIGHTS["license"]  * license_score_raw +
-            WEIGHTS["dept"]     * dept_score_raw +
-            WEIGHTS["category"] * category_score_raw +
-            WEIGHTS["freshness"]* freshness_raw +
-            WEIGHTS["col_meta"] * col_meta_raw,
+            WEIGHTS["desc"]      * desc_score_raw +
+            WEIGHTS["tags"]      * tag_score_raw +
+            WEIGHTS["license"]   * license_score_raw +
+            WEIGHTS["dept"]      * dept_score_raw +
+            WEIGHTS["category"]  * category_score_raw +
+            WEIGHTS["freshness"] * freshness_raw,
             1
         )
 
         records.append({
-            "id":                 row["id"],
-            "missing_description":missing_desc,
-            "missing_tags":       missing_tags,
-            "missing_license":    missing_lic,
-            "missing_department": missing_dept,
-            "missing_category":   missing_cat,
-            "is_stale":           staleness["is_stale"],
-            "days_overdue":       staleness["days_overdue"],
-            "desc_score":         desc_score_raw,
-            "tag_score":          tag_score_raw,
-            "license_score":      license_score_raw,
-            "dept_score":         dept_score_raw,
-            "category_score":     category_score_raw,
-            "freshness_score":    freshness_raw,
-            "col_metadata_score": col_meta_raw,
-            "health_score":       health_score,
-            "health_band":        health_band(health_score),
-            "scored_at":          datetime.now(timezone.utc).isoformat(),
+            "id":                  row["id"],
+            "missing_description": missing_desc,
+            "missing_tags":        missing_tags,
+            "missing_license":     missing_lic,
+            "missing_department":  missing_dept,
+            "missing_category":    missing_cat,
+            "is_stale":            staleness["is_stale"],
+            "days_overdue":        staleness["days_overdue"],
+            "desc_score":          desc_score_raw,
+            "tag_score":           tag_score_raw,
+            "license_score":       license_score_raw,
+            "dept_score":          dept_score_raw,
+            "category_score":      category_score_raw,
+            "freshness_score":     freshness_raw,
+            "health_score":        health_score,
+            "health_band":         health_band(health_score),
+            "scored_at":           datetime.now(timezone.utc).isoformat(),
         })
 
     flags_df = pd.DataFrame(records)
@@ -184,7 +176,7 @@ def score_datasets():
                 :missing_department, :missing_category,
                 :is_stale, :days_overdue,
                 :desc_score, :tag_score, :license_score,
-                :dept_score, :category_score, :freshness_score, :col_metadata_score,
+                :dept_score, :category_score, :freshness_score,
                 :health_score, :health_band, :scored_at
             )
         """, dict(row))
