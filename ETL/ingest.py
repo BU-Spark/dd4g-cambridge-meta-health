@@ -5,16 +5,17 @@ This script fetches dataset metadata from the Cambridge Open Data Portal
 via the Socrata Discovery API and stores it in a SQLite database.
 
 Database: ETL/data/cambridge_metadata.db
-Tables: ODP_datasets (primary storage), evaluations (for future AI health checks)
+Tables: ODP_datasets (primary storage), evaluations (populated by evaluate.py)
 
 Usage:
-    python ingest.py
+    python ingest.py              # Run standalone
+    python pipeline.py            # Run as part of full pipeline (ingest + evaluate)
 
 The script handles:
 - Paginated API fetching
 - Intelligent upsert (resets evaluation status when data changes)
 - JSON field storage for arrays
-- Preparation for evaluate.py integration
+- Database initialization (creates tables and indexes)
 """
 
 import requests
@@ -439,74 +440,26 @@ def upsert_datasets(records: List[Dict[str, Any]]) -> None:
 
 def main() -> None:
     """
-    Main ETL pipeline execution.
+    Main data ingestion execution.
+
+    This script is typically called by pipeline.py as the first step
+    in the ETL pipeline, but can also be run standalone.
 
     Steps:
     1. Initialize database (create tables if needed)
-    2. Fetch all datasets from API
+    2. Fetch all datasets from Socrata API
     3. Parse datasets into database format
     4. Upsert into database with intelligent re-evaluation logic
     5. Print summary statistics
 
-    ─────────────────────────────────────────────────────────
-    TODO (evaluate.py integration):
-    ─────────────────────────────────────────────────────────
+    Pipeline Integration:
+    - After ingest.py completes, evaluate.py processes datasets where
+      last_evaluated_at IS NULL (new or data-refreshed datasets)
+    - Use pipeline.py to run the complete workflow: ingest → evaluate
 
-    After this script runs, evaluate.py should:
-
-    1. Query unevaluated/stale datasets:
-       SELECT * FROM ODP_datasets
-       WHERE last_evaluated_at IS NULL
-          OR data_updated_at > last_evaluated_at
-
-    2. For each dataset, perform:
-       - Static health checks (license, contact, update frequency)
-       - AI metadata evaluation (description, tags, category fit)
-       - Calculate column_desc_completion
-
-    3. Insert evaluation results:
-       INSERT INTO evaluations (
-           dataset_id, ai_description_score, ai_tag_relevance_score,
-           ai_category_fit_score, ai_suggestions, is_update_late,
-           has_license, has_contact_email, column_desc_completion,
-           overall_health_status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-
-    4. Update evaluation timestamp:
-       UPDATE ODP_datasets
-       SET last_evaluated_at = CURRENT_TIMESTAMP
-       WHERE dataset_id = ?
-
-    ─────────────────────────────────────────────────────────
-    TODO (Streamlit dashboard integration):
-    ─────────────────────────────────────────────────────────
-
-    Dashboard should display:
-
-    1. Join datasets with latest evaluations:
-       SELECT d.*, e.overall_health_status, e.ai_description_score,
-              e.ai_tag_relevance_score, e.ai_suggestions
-       FROM ODP_datasets d
-       LEFT JOIN (
-           SELECT dataset_id, MAX(id) as latest_id
-           FROM evaluations
-           GROUP BY dataset_id
-       ) latest ON d.dataset_id = latest.dataset_id
-       LEFT JOIN evaluations e ON latest.latest_id = e.id
-
-    2. Filter by health status:
-       WHERE e.overall_health_status = 'Fail'
-
-    3. Show datasets needing attention:
-       WHERE d.last_evaluated_at IS NULL
-          OR e.overall_health_status IN ('Warning', 'Fail')
-
-    4. Metrics to display:
-       - Total datasets
-       - Datasets by health status
-       - Datasets without license
-       - Datasets with poor descriptions (AI score < 0.5)
-       - Datasets with late updates
+    Usage:
+        python ingest.py              # Run standalone
+        python pipeline.py            # Run as part of full pipeline
     """
     logger.info("=" * 60)
     logger.info("Cambridge Open Data Portal - Ingestion Pipeline")
@@ -578,7 +531,12 @@ def main() -> None:
 
     logger.info("=" * 60)
     logger.info(f"Database: {DB_PATH}")
-    logger.info("Pipeline complete! ✓")
+    logger.info("Ingestion complete!")
+    logger.info("=" * 60)
+    logger.info("")
+    logger.info("Next steps:")
+    logger.info("  - Run 'python evaluate.py' to evaluate dataset health")
+    logger.info("  - Or run 'python pipeline.py' to execute the full pipeline")
     logger.info("=" * 60)
 
 if __name__ == "__main__":
