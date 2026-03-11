@@ -168,3 +168,8 @@ $RECYCLE.BIN/
 
 # .nfs files are created when an open file is removed but is still being accessed
 .nfs*
+
+.env
+data/cambridge_metadata.db
+data/raw_data.json
+data/datasets.csv

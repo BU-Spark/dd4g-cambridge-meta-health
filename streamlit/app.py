@@ -46,7 +46,7 @@ def load_data() -> pd.DataFrame:
             h.desc_score, h.tag_score, h.license_score,
             h.col_metadata_score,
             l.llm_desc_score, l.llm_desc_feedback,
-            l.llm_suggested_desc, l.llm_suggested_tags, l.llm_status
+            l.llm_suggested_desc, l.llm_suggested_tags,l.llm_tag_alignment_note,l.llm_status
         FROM datasets d
         LEFT JOIN health_flags h ON d.id = h.id
         LEFT JOIN llm_results  l ON d.id = l.id
@@ -327,7 +327,12 @@ with tab4:
                 if tags_list:
                     st.markdown("**AI Suggested Tags:**")
                     st.code(", ".join(tags_list))
+
+                    if pd.notna(row.get("llm_tag_alignment_note")) and row["llm_tag_alignment_note"]:
+                        st.info(f"🏷️ Tag Alignment Note: {row['llm_tag_alignment_note']}")
+
                     ca, cb = st.columns(2)
+
                     if ca.button("\u2705 Approve Tags", key=f"tappr_{row['id']}"):
                         if not reviewer_tags:
                             ca.warning("Enter your name first.")
