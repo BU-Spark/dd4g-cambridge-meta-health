@@ -75,27 +75,35 @@ def init_evaluation_tables() -> None:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # ─── evaluations Table ───
+    # ─── evaluations Table (following README schema exactly) ───
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS evaluations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             dataset_id TEXT NOT NULL,
             evaluated_at TEXT DEFAULT (datetime('now')),
 
-            -- AI-Generated Qualitative Scores (0.0 to 1.0)
-            ai_description_score REAL,                -- LLM assessment: Is the description clear?
-            ai_tag_relevance_score REAL,              -- LLM assessment: Are tags relevant?
-            ai_category_fit_score REAL,               -- LLM assessment: Does category match content?
-            ai_suggestions TEXT,                      -- LLM improvement suggestions
+            -- AI metadata scoring (from llm_enrich.py) - 1-5 scale
+            description_score REAL,                   -- LLM rating of description clarity (1-5)
+            description_feedback TEXT,                -- LLM qualitative feedback on description
+            description_suggestion TEXT,              -- LLM suggested improved description
 
-            -- Static Health Checks (0 or 1 for boolean)
-            is_update_late INTEGER,                   -- Is data_updated_at overdue?
-            has_license INTEGER,                      -- Is license field populated?
-            has_contact_email INTEGER,                -- Is contact_email populated?
-            column_desc_completion REAL,              -- % of columns with descriptions
+            tag_score REAL,                           -- LLM rating of tag relevance (1-5)
+            tag_feedback TEXT,                        -- LLM qualitative feedback on tags
+            tag_suggestion TEXT,                      -- LLM suggested tags (JSON array)
 
-            -- Overall Health Status
-            overall_health_status TEXT,               -- 'Healthy', 'Warning', or 'Fail'
+            -- Calculated flags / indicators (from score_and_flag.py)
+            description_exists INTEGER,               -- 0/1: Does description exist?
+            tags_count_score INTEGER,                 -- 0-100: Tag count-based score
+            license_exists INTEGER,                   -- 0/1: Is license populated?
+            department_exists INTEGER,                -- 0/1: Is department populated?
+            category_exists INTEGER,                  -- 0/1: Is category populated?
+            days_overdue INTEGER,                     -- Number of days update is overdue
+
+            freshness_score REAL,                     -- 0.0-1.0: Freshness score
+            overall_health_score REAL,                -- 0.0-1.0: Weighted composite score
+            overall_health_label TEXT,                -- 'good','fair','poor','critical'
+
+            scored_at TEXT DEFAULT (datetime('now')), -- Timestamp when scoring completed
 
             FOREIGN KEY (dataset_id) REFERENCES ODP_datasets (dataset_id) ON DELETE CASCADE
         )
@@ -158,54 +166,72 @@ def save_evaluation(dataset_id: str, evaluation_result: Dict[str, Any]) -> None:
     Save evaluation results to database.
 
     This function performs two operations:
-    1. Inserts evaluation results into the evaluations table
+    1. Inserts evaluation results into the evaluations table (README schema)
     2. Updates the last_evaluated_at timestamp in ODP_datasets
 
     Args:
         dataset_id: The dataset to update
-        evaluation_result: Dictionary with all evaluation fields:
-            - ai_description_score (float)
-            - ai_tag_relevance_score (float)
-            - ai_category_fit_score (float)
-            - ai_suggestions (str)
-            - is_update_late (int/bool)
-            - has_license (int/bool)
-            - has_contact_email (int/bool)
-            - column_desc_completion (float)
-            - overall_health_status (str)
+        evaluation_result: Dictionary with all README schema fields:
+            - description_score (int 1-5, can be NULL)
+            - description_feedback (str, can be NULL)
+            - description_suggestion (str, can be NULL)
+            - tag_score (int 1-5, can be NULL)
+            - tag_feedback (str, can be NULL)
+            - tag_suggestion (str JSON array, can be NULL)
+            - description_exists (int 0/1)
+            - tags_count_score (int 0-100)
+            - license_exists (int 0/1)
+            - department_exists (int 0/1)
+            - category_exists (int 0/1)
+            - days_overdue (int)
+            - freshness_score (float 0.0-1.0)
+            - overall_health_score (float 0.0-1.0)
+            - overall_health_label (str: 'good'/'fair'/'poor'/'critical')
     """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     try:
-        # Insert into evaluations table
+        # Insert into evaluations table (README schema)
         cursor.execute("""
             INSERT INTO evaluations (
                 dataset_id,
-                ai_description_score,
-                ai_tag_relevance_score,
-                ai_category_fit_score,
-                ai_suggestions,
-                is_update_late,
-                has_license,
-                has_contact_email,
-                column_desc_completion,
-                overall_health_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                description_score,
+                description_feedback,
+                description_suggestion,
+                tag_score,
+                tag_feedback,
+                tag_suggestion,
+                description_exists,
+                tags_count_score,
+                license_exists,
+                department_exists,
+                category_exists,
+                days_overdue,
+                freshness_score,
+                overall_health_score,
+                overall_health_label
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             dataset_id,
-            evaluation_result['ai_description_score'],
-            evaluation_result['ai_tag_relevance_score'],
-            evaluation_result['ai_category_fit_score'],
-            evaluation_result['ai_suggestions'],
-            int(evaluation_result['is_update_late']),  # Convert bool to int
-            int(evaluation_result['has_license']),
-            int(evaluation_result['has_contact_email']),
-            evaluation_result['column_desc_completion'],
-            evaluation_result['overall_health_status']
+            evaluation_result['description_score'],
+            evaluation_result['description_feedback'],
+            evaluation_result['description_suggestion'],
+            evaluation_result['tag_score'],
+            evaluation_result['tag_feedback'],
+            evaluation_result['tag_suggestion'],
+            evaluation_result['description_exists'],
+            evaluation_result['tags_count_score'],
+            evaluation_result['license_exists'],
+            evaluation_result['department_exists'],
+            evaluation_result['category_exists'],
+            evaluation_result['days_overdue'],
+            evaluation_result['freshness_score'],
+            evaluation_result['overall_health_score'],
+            evaluation_result['overall_health_label']
         ))
 
-        # Update last_evaluated_at timestamp
+        # Update last_evaluated_at timestamp in ODP_datasets
         cursor.execute("""
             UPDATE ODP_datasets
             SET last_evaluated_at = ?
@@ -223,363 +249,576 @@ def save_evaluation(dataset_id: str, evaluation_result: Dict[str, Any]) -> None:
         conn.close()
 
 # ────────────────────────────────────────────────────────────
-# STATIC HEALTH CHECKS
+# STATIC HEALTH CHECKS (integrated from evaluate_scripts/score_and_flag.py)
+#
+# Adapted from contributor file (now archived at evaluate_scripts/archive/score_and_flag.py)
+# Refactored to use ODP_datasets table and README evaluations schema.
 # ────────────────────────────────────────────────────────────
 
-def check_has_license(dataset: Dict[str, Any]) -> bool:
+# Frequency thresholds for staleness calculation
+FREQUENCY_THRESHOLDS = {
+    "daily": 1,
+    "weekly": 7,
+    "biweekly": 14,
+    "monthly": 30,
+    "quarterly": 90,
+    "annually": 365,
+    "yearly": 365,
+    "annual": 365,
+    "as needed": None,
+    "historical": None,
+    "not planned": None,
+    "never": None,
+}
+
+# Health scoring weights (from score_and_flag.py)
+HEALTH_WEIGHTS = {
+    "desc": 0.25,      # Description quality: 25%
+    "tags": 0.15,      # Tag quality: 15%
+    "license": 0.15,   # License presence: 15%
+    "dept": 0.10,      # Department presence: 10%
+    "category": 0.10,  # Category presence: 10%
+    "freshness": 0.20, # Freshness: 20%
+    "col_meta": 0.05,  # Column metadata: 5%
+}
+
+
+def compute_staleness(dataset: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Check if dataset has a license.
+    Dynamically evaluate staleness relative to dataset's own update frequency.
 
     Args:
-        dataset: Dataset dictionary from database
+        dataset: Dataset dictionary from ODP_datasets table
 
     Returns:
-        True if license field is populated and non-empty
+        Dictionary with:
+        - is_stale (int): 1 if stale, 0 if fresh
+        - days_overdue (int): Number of days overdue (0 if not overdue, -1 if error)
+        - freshness_score (float): 0-100 score (100=fresh, 50=1-2x late, 0=>2x late)
     """
-    license_field = dataset.get('license')
-    return license_field is not None and str(license_field).strip() != ''
+    freq = (dataset.get("update_frequency") or "").strip().lower()
+    threshold_days = FREQUENCY_THRESHOLDS.get(freq, 730)  # Default: 2 years
 
+    if threshold_days is None:
+        # Special frequencies that don't become stale
+        return {"is_stale": 0, "days_overdue": 0, "freshness_score": 100.0}
 
-def check_has_contact_email(dataset: Dict[str, Any]) -> bool:
-    """
-    Check if dataset has a contact email.
-
-    Args:
-        dataset: Dataset dictionary from database
-
-    Returns:
-        True if contact_email field is populated and non-empty
-    """
-    contact = dataset.get('contact_email')
-    return contact is not None and str(contact).strip() != ''
-
-
-def calculate_column_desc_completion(dataset: Dict[str, Any]) -> float:
-    """
-    Calculate percentage of columns with descriptions.
-
-    This parses the columns_descriptions JSON array and counts
-    how many descriptions are non-empty.
-
-    Args:
-        dataset: Dataset dictionary from database
-
-    Returns:
-        Float between 0.0 and 1.0 representing completion percentage
-        (1.0 = all columns have descriptions, 0.0 = none have descriptions)
-    """
     try:
-        # Parse JSON arrays
-        columns_names = json.loads(dataset.get('columns_names', '[]'))
-        columns_descriptions = json.loads(dataset.get('columns_descriptions', '[]'))
+        last_updated = dataset.get("data_updated_at") or dataset.get("updated_at")
+        if not last_updated:
+            return {"is_stale": 1, "days_overdue": -1, "freshness_score": 0.0}
 
-        if not columns_names or len(columns_names) == 0:
-            return 0.0
+        updated_dt = datetime.fromisoformat(str(last_updated).replace("Z", "+00:00"))
+        days_since = (datetime.utcnow().replace(tzinfo=updated_dt.tzinfo) - updated_dt).days
+        days_overdue = max(0, days_since - threshold_days)
+        is_stale = 1 if days_overdue > 0 else 0
 
-        # Count non-empty descriptions
-        non_empty_descriptions = sum(
-            1 for desc in columns_descriptions
-            if desc and str(desc).strip()
-        )
+        # Calculate freshness score
+        overdue_ratio = days_since / threshold_days
+        if overdue_ratio <= 1.0:
+            freshness_score = 100.0
+        elif overdue_ratio <= 2.0:
+            freshness_score = 50.0
+        else:
+            freshness_score = 0.0
 
-        return non_empty_descriptions / len(columns_names)
+        return {"is_stale": is_stale, "days_overdue": days_overdue, "freshness_score": freshness_score}
 
-    except (json.JSONDecodeError, TypeError, ZeroDivisionError) as e:
-        logger.debug(f"Could not calculate column completion: {e}")
+    except Exception as e:
+        logger.debug(f"Could not calculate staleness: {e}")
+        return {"is_stale": 1, "days_overdue": -1, "freshness_score": 0.0}
+
+
+def compute_tag_score(tags: list) -> float:
+    """
+    Calculate tag score based on count.
+
+    Scoring:
+    - 0 tags → 0.0
+    - 1-2 tags → 33.0
+    - 3-4 tags → 67.0
+    - 5+ tags → 100.0
+
+    Args:
+        tags: List of tag strings
+
+    Returns:
+        Float score 0.0-100.0
+    """
+    n = len(tags)
+    if n == 0:
+        return 0.0
+    elif n <= 2:
+        return 33.0
+    elif n <= 4:
+        return 67.0
+    else:
+        return 100.0
+
+
+def compute_col_metadata_score(col_descriptions: list) -> float:
+    """
+    Calculate column metadata score.
+
+    Checks if >=50% of columns have descriptions.
+
+    Args:
+        col_descriptions: List of column description strings
+
+    Returns:
+        100.0 if >= 50% columns have descriptions, else 0.0
+    """
+    if not col_descriptions:
         return 0.0
 
+    filled = sum(1 for d in col_descriptions if d and str(d).strip())
+    return 100.0 if (filled / len(col_descriptions)) >= 0.5 else 0.0
 
-def check_is_update_late(dataset: Dict[str, Any]) -> bool:
+
+def health_band(score: float) -> str:
     """
-    Determine if dataset update is overdue based on maintenance frequency.
-
-    Logic:
-    1. Parse update_frequency field (e.g., "Annually", "Monthly", "Daily")
-    2. Calculate expected next update from data_updated_at
-    3. If current time > expected time * THRESHOLD, mark as late
+    Convert numeric health score to health band label.
 
     Args:
-        dataset: Dataset dictionary from database
+        score: Health score 0-100
 
     Returns:
-        True if update is late (>2x expected frequency), False otherwise
+        One of: "Good", "Fair", "Poor", "Critical"
+    """
+    if score >= 80:
+        return "Good"
+    elif score >= 60:
+        return "Fair"
+    elif score >= 40:
+        return "Poor"
+    else:
+        return "Critical"
+
+
+def calculate_component_scores(dataset: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Orchestrate all static health checks and calculate component scores.
+
+    This is the main static scoring function that:
+    1. Checks for missing fields (description, tags, license, department, category)
+    2. Calculates staleness/freshness
+    3. Scores tag count
+    4. Scores column metadata completion
+    5. Calculates weighted overall health score
+    6. Determines health band
+
+    Args:
+        dataset: Dataset dictionary from ODP_datasets table
+
+    Returns:
+        Dictionary with all static check results matching README schema:
+        {
+            'description_exists': int (0/1),
+            'tags_count_score': int (0-100),
+            'license_exists': int (0/1),
+            'department_exists': int (0/1),
+            'category_exists': int (0/1),
+            'days_overdue': int,
+            'freshness_score': float (0-100),
+            'overall_health_score': float (0-100),
+            'overall_health_label': str ('Good'/'Fair'/'Poor'/'Critical')
+        }
+    """
+    # Parse tags and column descriptions
+    try:
+        tags = json.loads(dataset.get("tags", "[]")) if dataset.get("tags") else []
+    except json.JSONDecodeError:
+        tags = []
+
+    try:
+        col_desc = json.loads(dataset.get("columns_descriptions", "[]")) if dataset.get("columns_descriptions") else []
+    except json.JSONDecodeError:
+        col_desc = []
+
+    # Check for missing fields (binary flags)
+    description_text = str(dataset.get("description", "")).strip()
+    missing_desc = 0 if description_text else 1
+    missing_tags = 0 if len(tags) > 0 else 1
+    missing_lic = 0 if (dataset.get("license") and str(dataset.get("license")).strip()) else 1
+    missing_dept = 0 if (dataset.get("department") and str(dataset.get("department")).strip()) else 1
+    missing_cat = 0 if (dataset.get("category") and str(dataset.get("category")).strip()) else 1
+
+    # Calculate description score (heuristic: 0/25/50/75 based on length)
+    if len(description_text) == 0:
+        desc_score_raw = 0.0
+    elif len(description_text) < 30:
+        desc_score_raw = 25.0
+    elif len(description_text) < 100:
+        desc_score_raw = 50.0
+    else:
+        desc_score_raw = 75.0
+
+    # Calculate other component scores
+    tag_score_raw = compute_tag_score(tags)
+    license_score_raw = 0.0 if missing_lic else 100.0
+    dept_score_raw = 0.0 if missing_dept else 100.0
+    category_score_raw = 0.0 if missing_cat else 100.0
+    staleness = compute_staleness(dataset)
+    freshness_raw = staleness["freshness_score"]
+    col_meta_raw = compute_col_metadata_score(col_desc)
+
+    # Calculate weighted overall health score (0-100)
+    overall_score = round(
+        HEALTH_WEIGHTS["desc"] * desc_score_raw +
+        HEALTH_WEIGHTS["tags"] * tag_score_raw +
+        HEALTH_WEIGHTS["license"] * license_score_raw +
+        HEALTH_WEIGHTS["dept"] * dept_score_raw +
+        HEALTH_WEIGHTS["category"] * category_score_raw +
+        HEALTH_WEIGHTS["freshness"] * freshness_raw +
+        HEALTH_WEIGHTS["col_meta"] * col_meta_raw,
+        1
+    )
+
+    # Return results mapped to README schema
+    return {
+        # Binary existence flags (inverted from missing_*)
+        "description_exists": 1 - missing_desc,
+        "license_exists": 1 - missing_lic,
+        "department_exists": 1 - missing_dept,
+        "category_exists": 1 - missing_cat,
+
+        # Scores
+        "tags_count_score": int(tag_score_raw),          # 0-100
+        "days_overdue": staleness["days_overdue"],       # integer
+        "freshness_score": freshness_raw,                # 0-100 (will be converted to 0.0-1.0 later)
+
+        # Overall health
+        "overall_health_score": overall_score,           # 0-100 (will be converted to 0.0-1.0 later)
+        "overall_health_label": health_band(overall_score)  # Good/Fair/Poor/Critical (will be lowercased later)
+    }
+
+# ────────────────────────────────────────────────────────────
+# AI EVALUATION FUNCTIONS (integrated from evaluate_scripts/llm_enrich.py)
+#
+# Adapted from contributor file (now archived at evaluate_scripts/archive/llm_enrich.py)
+# Refactored to use setup/config.py GeminiClient and README evaluations schema.
+# Note: human_approvals table from original file is out of scope (not implemented)
+# ────────────────────────────────────────────────────────────
+
+def score_description(llm_client, dataset: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Use LLM to rate description clarity on a 1-5 scale.
+
+    Args:
+        llm_client: Configured LLM client (from config.get_llm_client())
+        dataset: Dataset dictionary from ODP_datasets table
+
+    Returns:
+        Dictionary with:
+        - score (int): 1-5 rating
+        - feedback (str): Qualitative feedback
+    """
+    title = dataset.get('title', 'N/A')
+    description = dataset.get('description', '')
+
+    # Parse column names for context
+    try:
+        cols = json.loads(dataset.get('columns_names', '[]'))
+    except json.JSONDecodeError:
+        cols = []
+
+    prompt = f"""
+Dataset title: "{title}"
+Description: "{description}"
+Columns: {', '.join(cols[:10])} {'...' if len(cols) > 10 else ''}
+
+Rate the description clarity on a scale of 1 to 5:
+1 = Missing or completely unclear
+2 = Vague, lacks essential details
+3 = Basic but incomplete
+4 = Clear and informative
+5 = Excellent, comprehensive
+
+Provide ONLY a number from 1 to 5, followed by a brief one-sentence feedback.
+Format: <score>|<feedback>
+Example: 3|Description is basic but lacks detail about data sources.
+"""
+
+    try:
+        response = llm_client.call_llm(prompt)
+        parts = response.strip().split('|', 1)
+        score = int(parts[0].strip())
+        feedback = parts[1].strip() if len(parts) > 1 else "No feedback provided"
+        return {"score": score, "feedback": feedback}
+    except Exception as e:
+        logger.warning(f"Failed to score description: {e}")
+        return {"score": 3, "feedback": f"LLM scoring failed: {str(e)}"}
+
+
+def suggest_description(llm_client, dataset: Dict[str, Any]) -> str:
+    """
+    Generate an improved description for the dataset.
+
+    Args:
+        llm_client: Configured LLM client
+        dataset: Dataset dictionary from ODP_datasets table
+
+    Returns:
+        Suggested improved description string
+    """
+    title = dataset.get('title', 'N/A')
+    current_desc = dataset.get('description', '')
+
+    try:
+        cols = json.loads(dataset.get('columns_names', '[]'))
+    except json.JSONDecodeError:
+        cols = []
+
+    prompt = f"""
+Dataset title: "{title}"
+Current description: "{current_desc}"
+Columns: {', '.join(cols[:10])} {'...' if len(cols) > 10 else ''}
+
+Write a concise, informative description (2-3 sentences) that:
+- Clearly explains what data this dataset contains
+- Mentions key fields or metrics
+- Describes potential use cases or purpose
+
+Provide ONLY the improved description, no preamble.
+"""
+
+    try:
+        response = llm_client.call_llm(prompt)
+        return response.strip()
+    except Exception as e:
+        logger.warning(f"Failed to generate description suggestion: {e}")
+        return f"Unable to generate suggestion: {str(e)}"
+
+
+def score_tag_match(llm_client, dataset: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Use LLM to rate tag relevance on a 1-5 scale.
+
+    Args:
+        llm_client: Configured LLM client
+        dataset: Dataset dictionary from ODP_datasets table
+
+    Returns:
+        Dictionary with:
+        - score (int): 1-5 rating
+        - feedback (str): Qualitative feedback
+    """
+    title = dataset.get('title', 'N/A')
+    description = dataset.get('description', '')
+
+    try:
+        tags = json.loads(dataset.get('tags', '[]'))
+    except json.JSONDecodeError:
+        tags = []
+
+    tag_str = ', '.join(tags) if tags else '(no tags)'
+
+    prompt = f"""
+Dataset title: "{title}"
+Description: "{description}"
+Tags: {tag_str}
+
+Rate how well the tags match the dataset content on a scale of 1 to 5:
+1 = No tags or completely irrelevant
+2 = Generic or mostly irrelevant
+3 = Somewhat relevant but could be better
+4 = Relevant and useful
+5 = Highly specific and relevant
+
+Provide ONLY a number from 1 to 5, followed by a brief one-sentence feedback.
+Format: <score>|<feedback>
+Example: 4|Tags are relevant and aid discoverability.
+"""
+
+    try:
+        response = llm_client.call_llm(prompt)
+        parts = response.strip().split('|', 1)
+        score = int(parts[0].strip())
+        feedback = parts[1].strip() if len(parts) > 1 else "No feedback provided"
+        return {"score": score, "feedback": feedback}
+    except Exception as e:
+        logger.warning(f"Failed to score tags: {e}")
+        return {"score": 3, "feedback": f"LLM scoring failed: {str(e)}"}
+
+
+def suggest_tags(llm_client, dataset: Dict[str, Any]) -> list:
+    """
+    Generate 3-5 relevant tags for the dataset.
+
+    Args:
+        llm_client: Configured LLM client
+        dataset: Dataset dictionary from ODP_datasets table
+
+    Returns:
+        List of suggested tag strings
+    """
+    title = dataset.get('title', 'N/A')
+    description = dataset.get('description', '')
+
+    try:
+        current_tags = json.loads(dataset.get('tags', '[]'))
+    except json.JSONDecodeError:
+        current_tags = []
+
+    current_tag_str = ', '.join(current_tags) if current_tags else '(none)'
+
+    prompt = f"""
+Dataset title: "{title}"
+Description: "{description}"
+Current tags: {current_tag_str}
+
+Suggest 3-5 specific, relevant tags that would help users discover this dataset.
+Tags should be:
+- Specific to the domain/topic
+- Useful for search and filtering
+- Not too generic (avoid tags like "data", "dataset")
+
+Provide ONLY the tags, comma-separated, no preamble.
+Example: public-health, covid-19, testing-sites, cambridge
+"""
+
+    try:
+        response = llm_client.call_llm(prompt)
+        tags = [t.strip() for t in response.strip().split(',')]
+        return tags[:5]  # Limit to 5 tags
+    except Exception as e:
+        logger.warning(f"Failed to suggest tags: {e}")
+        return []
+
+
+def enrich_with_llm(dataset: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Orchestrate all LLM enrichment calls for a dataset.
+
+    This function performs:
+    1. Description scoring (1-5)
+    2. Description suggestion
+    3. Tag scoring (1-5)
+    4. Tag suggestion
+
+    Args:
+        dataset: Dataset dictionary from ODP_datasets table
+
+    Returns:
+        Dictionary with all LLM enrichment results matching README schema:
+        {
+            'description_score': int (1-5),
+            'description_feedback': str,
+            'description_suggestion': str,
+            'tag_score': int (1-5),
+            'tag_feedback': str,
+            'tag_suggestion': str (JSON array)
+        }
     """
     try:
-        update_freq = dataset.get('update_frequency')
-        data_updated_at = dataset.get('data_updated_at')
+        # Import config and get LLM client
+        import sys
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'setup'))
+        from config import get_llm_client
 
-        # If no frequency specified or no last update, can't determine lateness
-        if not update_freq or not data_updated_at:
-            return False
+        llm_client = get_llm_client()
 
-        # Special cases that are never "late"
-        if any(keyword in str(update_freq).lower() for keyword in ['historical', 'as needed', 'one-time']):
-            return False
+        # Score and suggest for description
+        desc_result = score_description(llm_client, dataset)
+        desc_suggestion = suggest_description(llm_client, dataset)
 
-        # Parse last update timestamp
-        last_update = datetime.fromisoformat(data_updated_at.replace('Z', '+00:00'))
-        current_time = datetime.utcnow()
-        days_since_update = (current_time - last_update).days
+        # Score and suggest for tags
+        tag_result = score_tag_match(llm_client, dataset)
+        tag_suggestions = suggest_tags(llm_client, dataset)
 
-        # Map frequency keywords to expected days
-        frequency_map = {
-            'daily': 1,
-            'weekly': 7,
-            'biweekly': 14,
-            'monthly': 30,
-            'quarterly': 90,
-            'annually': 365,
-            'annual': 365,
+        return {
+            'description_score': desc_result['score'],
+            'description_feedback': desc_result['feedback'],
+            'description_suggestion': desc_suggestion,
+            'tag_score': tag_result['score'],
+            'tag_feedback': tag_result['feedback'],
+            'tag_suggestion': json.dumps(tag_suggestions)  # Store as JSON array
         }
 
-        # Extract frequency keyword (case-insensitive)
-        freq_lower = str(update_freq).lower()
-        expected_days = None
-
-        for keyword, days in frequency_map.items():
-            if keyword in freq_lower:
-                expected_days = days
-                break
-
-        if expected_days is None:
-            return False  # Unknown frequency, can't determine lateness
-
-        # Apply threshold (>2x expected = late)
-        threshold_days = expected_days * THRESHOLDS['update_late_multiplier']
-        is_late = days_since_update > threshold_days
-
-        if is_late:
-            logger.debug(f"Update late: {days_since_update} days vs {threshold_days} threshold")
-
-        return is_late
-
-    except (ValueError, TypeError) as e:
-        logger.debug(f"Could not parse update lateness: {e}")
-        return False
-
-# ────────────────────────────────────────────────────────────
-# AI EVALUATION FUNCTIONS
-# ────────────────────────────────────────────────────────────
-
-def build_evaluation_prompt(dataset: Dict[str, Any]) -> str:
-    """
-    Build the prompt for LLM evaluation.
-
-    This helper function constructs a well-formatted prompt that asks
-    the LLM to evaluate dataset metadata quality.
-
-    Args:
-        dataset: Dataset dictionary from database
-
-    Returns:
-        Formatted prompt string for LLM
-    """
-    # TODO: Implement prompt engineering
-    #
-    # IMPLEMENTATION GUIDE:
-    # 1. Extract relevant metadata from dataset
-    # 2. Create clear evaluation criteria
-    # 3. Request structured JSON output
-    # 4. Include examples of good vs bad metadata (optional but recommended)
-    #
-    # RECOMMENDED PROMPT STRUCTURE:
-    # """
-    # You are evaluating the quality of open data portal metadata.
-    #
-    # Dataset Information:
-    # - Title: {title}
-    # - Description: {description}
-    # - Tags: {tags}
-    # - Category: {category}
-    # - Columns: {column_names}
-    #
-    # Please evaluate the following:
-    # 1. Description clarity (0.0-1.0): Is it clear what data this dataset contains?
-    #    - 1.0: Description is comprehensive, explains purpose and content clearly
-    #    - 0.5: Description exists but is vague or incomplete
-    #    - 0.0: No description or completely unclear
-    #
-    # 2. Tag relevance (0.0-1.0): Are tags accurate and useful for discovery?
-    #    - 1.0: Tags are specific, relevant, and aid in discovery
-    #    - 0.5: Tags are generic or only partially relevant
-    #    - 0.0: No tags or completely irrelevant tags
-    #
-    # 3. Category fit (0.0-1.0): Does the assigned category match the content?
-    #    - 1.0: Category perfectly matches dataset content
-    #    - 0.5: Category is loosely related but not optimal
-    #    - 0.0: Category doesn't match or is missing
-    #
-    # Respond in JSON format:
-    # {
-    #   "description_score": 0.0-1.0,
-    #   "tag_score": 0.0-1.0,
-    #   "category_score": 0.0-1.0,
-    #   "suggestions": "Brief suggestions for improvement (1-2 sentences)"
-    # }
-    # """
-    #
-    # PLACEHOLDER IMPLEMENTATION:
-
-    title = dataset.get('title', 'N/A')
-    description = dataset.get('description', 'N/A')
-    tags = json.loads(dataset.get('tags', '[]'))
-    category = dataset.get('category', 'N/A')
-
-    # Simple prompt (replace with proper prompt engineering)
-    prompt = f"Evaluate metadata quality for dataset: {title}"
-
-    return prompt
-
-
-def evaluate_with_ai(dataset: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Perform AI-based metadata evaluation.
-
-    This function sends dataset metadata to an LLM and receives quality scores.
-
-    Args:
-        dataset: Dataset dictionary from database
-
-    Returns:
-        Dictionary with keys:
-        - ai_description_score (float 0.0-1.0)
-        - ai_tag_relevance_score (float 0.0-1.0)
-        - ai_category_fit_score (float 0.0-1.0)
-        - ai_suggestions (string)
-    """
-    # TODO: Implement AI evaluation logic
-    #
-    # IMPLEMENTATION GUIDE:
-    # 1. Extract relevant fields from dataset:
-    #    title = dataset.get('title')
-    #    description = dataset.get('description')
-    #    tags = json.loads(dataset.get('tags', '[]'))
-    #    category = dataset.get('category')
-    #    column_names = json.loads(dataset.get('columns_names', '[]'))
-    #
-    # 2. Build prompt using helper function:
-    #    prompt = build_evaluation_prompt(dataset)
-    #
-    # 3. Call LLM using config module:
-    #    from config import get_llm_client
-    #    llm_client = get_llm_client()
-    #    response = llm_client.evaluate(prompt)
-    #
-    # 4. The response will be a dictionary with scores
-    #    (LLM client handles JSON parsing)
-    #
-    # 5. Return the structured result
-    #
-    # PLACEHOLDER IMPLEMENTATION (returns dummy scores):
-
-    logger.debug(f"AI evaluation for: {dataset.get('title')}")
-
-    # Return dummy scores until AI logic is implemented
-    return {
-        'ai_description_score': 0.75,  # TODO: Replace with actual LLM score
-        'ai_tag_relevance_score': 0.80,  # TODO: Replace with actual LLM score
-        'ai_category_fit_score': 0.70,  # TODO: Replace with actual LLM score
-        'ai_suggestions': "AI evaluation not yet implemented. Implement evaluate_with_ai() in evaluate.py."
-    }
+    except Exception as e:
+        logger.error(f"LLM enrichment failed for {dataset.get('dataset_id')}: {e}")
+        # Return NULL values on failure
+        return {
+            'description_score': None,
+            'description_feedback': None,
+            'description_suggestion': None,
+            'tag_score': None,
+            'tag_feedback': None,
+            'tag_suggestion': None
+        }
 
 # ────────────────────────────────────────────────────────────
 # RESULT AGGREGATION & STORAGE
 # ────────────────────────────────────────────────────────────
 
-def calculate_overall_health(
-    ai_scores: Dict[str, Any],
-    static_checks: Dict[str, Any]
-) -> str:
-    """
-    Determine overall health status based on all checks.
-
-    Health Logic (from README):
-    - Fail: AI can't determine dataset purpose (score <0.3), no license,
-            update >2x late, or no column descriptions
-    - Warning: Description unclear (score <0.5), tags/category poor,
-               no contact, or <50% column descriptions
-    - Healthy: All checks pass
-
-    Args:
-        ai_scores: Dictionary with AI evaluation results
-        static_checks: Dictionary with static check results
-
-    Returns:
-        'Healthy', 'Warning', or 'Fail'
-    """
-    # Fail conditions (any true → Fail)
-    fail_conditions = [
-        ai_scores['ai_description_score'] < THRESHOLDS['description_fail_score'],
-        not static_checks['has_license'],
-        static_checks['is_update_late'],
-        static_checks['column_desc_completion'] == 0.0
-    ]
-
-    # Warning conditions (any true → Warning)
-    warning_conditions = [
-        ai_scores['ai_description_score'] < THRESHOLDS['description_min_score'],
-        ai_scores['ai_tag_relevance_score'] < THRESHOLDS['tag_min_score'],
-        ai_scores['ai_category_fit_score'] < THRESHOLDS['category_min_score'],
-        not static_checks['has_contact_email'],
-        static_checks['column_desc_completion'] < THRESHOLDS['column_desc_min']
-    ]
-
-    # Fail takes precedence over Warning
-    if any(fail_conditions):
-        return 'Fail'
-    elif any(warning_conditions):
-        return 'Warning'
-    else:
-        return 'Healthy'
-
-
 def evaluate_dataset(dataset: Dict[str, Any]) -> Dict[str, Any]:
     """
     Perform complete evaluation of a single dataset.
 
-    This orchestrates both static checks and AI evaluation,
-    then aggregates results into a final health status.
+    Execution order (per user requirement):
+    1. Static scoring (score_and_flag.py logic) - runs first
+    2. LLM enrichment (llm_enrich.py logic) - runs second
+    3. Consolidation and mapping to README schema
 
     Args:
-        dataset: Dataset dictionary from database
+        dataset: Dataset dictionary from ODP_datasets table
 
     Returns:
-        Complete evaluation result dictionary ready for database insertion
+        Complete evaluation result dictionary matching README schema,
+        ready for database insertion into evaluations table
     """
-    logger.debug(f"Evaluating: {dataset.get('title')}")
+    dataset_id = dataset.get('dataset_id', 'unknown')
+    logger.debug(f"Evaluating: {dataset.get('title')} ({dataset_id})")
 
-    # Step 1: Perform static checks (fully implemented)
-    static_checks = {
-        'has_license': check_has_license(dataset),
-        'has_contact_email': check_has_contact_email(dataset),
-        'column_desc_completion': calculate_column_desc_completion(dataset),
-        'is_update_late': check_is_update_late(dataset)
-    }
+    # STEP 1: Static scoring (score_and_flag.py logic)
+    logger.debug(f"Running static checks for {dataset_id}...")
+    static_scores = calculate_component_scores(dataset)
 
-    # Step 2: Perform AI evaluation (skeleton with dummy scores)
+    # STEP 2: LLM enrichment (llm_enrich.py logic)
+    logger.debug(f"Running LLM enrichment for {dataset_id}...")
     try:
-        ai_scores = evaluate_with_ai(dataset)
+        llm_scores = enrich_with_llm(dataset)
     except Exception as e:
-        logger.error(f"AI evaluation failed for {dataset.get('dataset_id')}: {e}")
-        # Use fallback scores if AI fails
-        ai_scores = {
-            'ai_description_score': 0.5,
-            'ai_tag_relevance_score': 0.5,
-            'ai_category_fit_score': 0.5,
-            'ai_suggestions': f"AI evaluation failed: {str(e)}"
+        logger.warning(f"LLM enrichment failed for {dataset_id}: {e}")
+        llm_scores = {
+            'description_score': None,
+            'description_feedback': None,
+            'description_suggestion': None,
+            'tag_score': None,
+            'tag_feedback': None,
+            'tag_suggestion': None
         }
 
-    # Step 3: Calculate overall health
-    overall_health = calculate_overall_health(ai_scores, static_checks)
+    # STEP 3: Map to README schema
+    evaluation = {
+        # LLM fields (1-5 scale, can be NULL)
+        'description_score': llm_scores['description_score'],
+        'description_feedback': llm_scores['description_feedback'],
+        'description_suggestion': llm_scores['description_suggestion'],
+        'tag_score': llm_scores['tag_score'],
+        'tag_feedback': llm_scores['tag_feedback'],
+        'tag_suggestion': llm_scores['tag_suggestion'],
 
-    # Step 4: Combine all results
-    evaluation_result = {
-        **ai_scores,
-        **static_checks,
-        'overall_health_status': overall_health
+        # Static check fields (always present)
+        'description_exists': static_scores['description_exists'],
+        'tags_count_score': static_scores['tags_count_score'],
+        'license_exists': static_scores['license_exists'],
+        'department_exists': static_scores['department_exists'],
+        'category_exists': static_scores['category_exists'],
+        'days_overdue': static_scores['days_overdue'],
+
+        # Convert freshness_score from 0-100 to 0.0-1.0
+        'freshness_score': static_scores['freshness_score'] / 100.0,
+
+        # Convert overall_health_score from 0-100 to 0.0-1.0
+        'overall_health_score': static_scores['overall_health_score'] / 100.0,
+
+        # Convert health_label to lowercase (Good → good, Fair → fair, etc.)
+        'overall_health_label': static_scores['overall_health_label'].lower()
     }
 
-    return evaluation_result
+    logger.debug(f"Evaluation complete for {dataset_id}: health={evaluation['overall_health_label']}, score={evaluation['overall_health_score']:.2f}")
+    return evaluation
 
 # ────────────────────────────────────────────────────────────
 # COMMAND-LINE INTERFACE

@@ -14,9 +14,11 @@ Usage:
 """
 
 import os
+import time
 from typing import Dict, Any
 from dotenv import load_dotenv
 import logging
+import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +36,17 @@ def get_config() -> Dict[str, Any]:
 
     Returns:
         Dictionary with configuration keys including:
-        - llm_provider: Which LLM service to use ('openai' or 'anthropic')
+        - llm_provider: Which LLM service to use ('gemini', 'openai', or 'anthropic')
         - API keys for each provider
         - Model names
         - LLM parameters (temperature, max_tokens)
     """
     return {
-        'llm_provider': os.getenv('LLM_PROVIDER', 'openai'),
+        'llm_provider': os.getenv('LLM_PROVIDER', 'gemini'),
+        'gemini_api_key': os.getenv('GEMINI_API_KEY'),
         'openai_api_key': os.getenv('OPENAI_API_KEY'),
         'anthropic_api_key': os.getenv('ANTHROPIC_API_KEY'),
+        'gemini_model': os.getenv('GEMINI_MODEL', 'gemini-2.0-flash'),
         'openai_model': os.getenv('OPENAI_MODEL', 'gpt-4'),
         'anthropic_model': os.getenv('ANTHROPIC_MODEL', 'claude-3-sonnet-20240229'),
         'temperature': float(os.getenv('LLM_TEMPERATURE', '0.3')),
@@ -270,12 +274,92 @@ class AnthropicClient(BaseLLMClient):
         }
 
 
+class GeminiClient(BaseLLMClient):
+    """
+    Google Gemini client for dataset metadata evaluation.
+
+    This client uses Google's Gemini API to evaluate dataset quality.
+    Implements the BaseLLMClient interface with retry logic and exponential backoff.
+    """
+
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash",
+                 temperature: float = 0.3, max_tokens: int = 1000):
+        """
+        Initialize Gemini client.
+
+        Args:
+            api_key: Google AI API key
+            model: Model name (default: gemini-2.0-flash)
+            temperature: Sampling temperature (0.0-1.0)
+            max_tokens: Maximum tokens to generate
+        """
+        self.client = genai.Client(api_key=api_key)
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        logger.info(f"Gemini client initialized (model: {model})")
+
+    def call_llm(self, prompt: str, retries: int = 4) -> str:
+        """
+        Call Gemini API with retry logic and exponential backoff.
+
+        Args:
+            prompt: The prompt to send to Gemini
+            retries: Number of retry attempts on failure
+
+        Returns:
+            Response text from Gemini
+
+        Raises:
+            Exception: If all retries are exhausted
+        """
+        for attempt in range(retries):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt
+                )
+                return response.text.strip()
+            except Exception as e:
+                wait = 15 * (attempt + 1)  # Exponential backoff: 15s, 30s, 45s, 60s
+                logger.warning(f"Gemini API error (attempt {attempt+1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    logger.info(f"Retrying in {wait} seconds...")
+                    time.sleep(wait)
+                else:
+                    logger.error("Max retries exceeded for Gemini API")
+                    raise
+
+    def evaluate(self, prompt: str) -> Dict[str, Any]:
+        """
+        Call Gemini API with evaluation prompt.
+
+        Note: This method is kept for backward compatibility with the BaseLLMClient
+        interface, but the actual implementation will be in evaluate.py using
+        call_llm() directly with custom prompts for each evaluation aspect.
+
+        Args:
+            prompt: The evaluation prompt
+
+        Returns:
+            Dictionary with evaluation scores
+        """
+        logger.debug("Gemini evaluation called via evaluate() method")
+        # Placeholder - actual implementation will be in evaluate.py
+        return {
+            'ai_description_score': 0.75,
+            'ai_tag_relevance_score': 0.80,
+            'ai_category_fit_score': 0.70,
+            'ai_suggestions': "Use call_llm() directly for custom prompts in evaluate.py"
+        }
+
+
 def get_llm_client() -> BaseLLMClient:
     """
     Get configured LLM client based on environment settings.
 
     This factory function reads the LLM_PROVIDER environment variable
-    and returns the appropriate client instance (OpenAI or Anthropic).
+    and returns the appropriate client instance (Gemini, OpenAI, or Anthropic).
 
     Returns:
         Configured LLM client instance
@@ -290,7 +374,22 @@ def get_llm_client() -> BaseLLMClient:
     config = get_config()
     provider = config['llm_provider'].lower()
 
-    if provider == 'openai':
+    if provider == 'gemini':
+        api_key = config['gemini_api_key']
+        if not api_key or api_key == 'your-gemini-api-key-here':
+            raise ValueError(
+                "GEMINI_API_KEY not set in .env file. "
+                "Copy .env.example to .env and add your API key."
+            )
+
+        return GeminiClient(
+            api_key=api_key,
+            model=config['gemini_model'],
+            temperature=config['temperature'],
+            max_tokens=config['max_tokens']
+        )
+
+    elif provider == 'openai':
         api_key = config['openai_api_key']
         if not api_key or api_key == 'sk-your-openai-api-key-here':
             raise ValueError(
@@ -323,7 +422,7 @@ def get_llm_client() -> BaseLLMClient:
     else:
         raise ValueError(
             f"Unsupported LLM provider: {provider}. "
-            f"Must be 'openai' or 'anthropic'."
+            f"Must be 'gemini', 'openai', or 'anthropic'."
         )
 
 
