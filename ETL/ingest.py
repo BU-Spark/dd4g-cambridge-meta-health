@@ -5,7 +5,7 @@ This script fetches dataset metadata from the Cambridge Open Data Portal
 via the Socrata Discovery API and stores it in a SQLite database.
 
 Database: ETL/data/cambridge_metadata.db
-Tables: ODP_datasets (primary storage), evaluations (populated by evaluate.py)
+Tables Created: ODP_datasets (primary storage for dataset metadata)
 
 Usage:
     python ingest.py              # Run standalone
@@ -54,13 +54,14 @@ logger = logging.getLogger(__name__)
 
 def init_database() -> None:
     """
-    Initialize SQLite database with schema.
+    Initialize SQLite database with schema for ingestion.
 
     Creates:
     - data/ directory if it doesn't exist
     - ODP_datasets table for storing dataset metadata
-    - evaluations table for future AI health check results
     - Indexes for query optimization
+
+    Note: The evaluations table is created by evaluate.py
 
     This function is idempotent - safe to run multiple times.
     """
@@ -72,7 +73,7 @@ def init_database() -> None:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # ─── TABLE 1: ODP_datasets (Primary Storage) ───
+    # ─── ODP_datasets Table (Primary Storage) ───
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ODP_datasets (
             -- Primary Key
@@ -127,33 +128,7 @@ def init_database() -> None:
         )
     """)
 
-    # ─── TABLE 2: evaluations (Future AI Health Checks) ───
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS evaluations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            dataset_id TEXT NOT NULL,
-            evaluated_at TEXT DEFAULT (datetime('now')),
-
-            -- AI-Generated Qualitative Scores (0.0 to 1.0)
-            ai_description_score REAL,                -- LLM assessment: Is the description clear?
-            ai_tag_relevance_score REAL,              -- LLM assessment: Are tags relevant?
-            ai_category_fit_score REAL,               -- LLM assessment: Does category match content?
-            ai_suggestions TEXT,                      -- LLM improvement suggestions
-
-            -- Static Health Checks (0 or 1 for boolean)
-            is_update_late INTEGER,                   -- Is data_updated_at overdue?
-            has_license INTEGER,                      -- Is license field populated?
-            has_contact_email INTEGER,                -- Is contact_email populated?
-            column_desc_completion REAL,              -- % of columns with descriptions
-
-            -- Overall Health Status
-            overall_health_status TEXT,               -- 'Healthy', 'Warning', or 'Fail'
-
-            FOREIGN KEY (dataset_id) REFERENCES ODP_datasets (dataset_id) ON DELETE CASCADE
-        )
-    """)
-
-    # ─── INDEXES for Query Optimization ───
+    # ─── Indexes for Query Optimization ───
 
     # Index for evaluation pipeline: find datasets that need re-evaluation
     cursor.execute("""
@@ -172,12 +147,6 @@ def init_database() -> None:
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_category
         ON ODP_datasets (category)
-    """)
-
-    # Index for joining evaluations with datasets
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_eval_dataset
-        ON evaluations (dataset_id, evaluated_at DESC)
     """)
 
     conn.commit()
@@ -532,11 +501,6 @@ def main() -> None:
     logger.info("=" * 60)
     logger.info(f"Database: {DB_PATH}")
     logger.info("Ingestion complete!")
-    logger.info("=" * 60)
-    logger.info("")
-    logger.info("Next steps:")
-    logger.info("  - Run 'python evaluate.py' to evaluate dataset health")
-    logger.info("  - Or run 'python pipeline.py' to execute the full pipeline")
     logger.info("=" * 60)
 
 if __name__ == "__main__":

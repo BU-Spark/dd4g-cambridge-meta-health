@@ -7,7 +7,8 @@ It performs two types of checks:
 2. AI Metadata Evaluation: LLM-based assessment of description quality, tag relevance, category fit
 
 Database: ETL/data/cambridge_metadata.db
-Tables: ODP_datasets (input), evaluations (output)
+Tables Created: evaluations (stores health check results)
+Tables Used: ODP_datasets (reads dataset metadata, updates last_evaluated_at)
 
 Usage:
     python evaluate.py                  # Evaluate all unevaluated datasets
@@ -54,6 +55,63 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ────────────────────────────────────────────────────────────
+# DATABASE INITIALIZATION
+# ────────────────────────────────────────────────────────────
+
+def init_evaluation_tables() -> None:
+    """
+    Initialize evaluations table and indexes.
+
+    Creates:
+    - evaluations table for storing health check results
+    - Indexes for query optimization
+
+    Note: The ODP_datasets table is created by ingest.py
+
+    This function is idempotent - safe to run multiple times.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # ─── evaluations Table ───
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dataset_id TEXT NOT NULL,
+            evaluated_at TEXT DEFAULT (datetime('now')),
+
+            -- AI-Generated Qualitative Scores (0.0 to 1.0)
+            ai_description_score REAL,                -- LLM assessment: Is the description clear?
+            ai_tag_relevance_score REAL,              -- LLM assessment: Are tags relevant?
+            ai_category_fit_score REAL,               -- LLM assessment: Does category match content?
+            ai_suggestions TEXT,                      -- LLM improvement suggestions
+
+            -- Static Health Checks (0 or 1 for boolean)
+            is_update_late INTEGER,                   -- Is data_updated_at overdue?
+            has_license INTEGER,                      -- Is license field populated?
+            has_contact_email INTEGER,                -- Is contact_email populated?
+            column_desc_completion REAL,              -- % of columns with descriptions
+
+            -- Overall Health Status
+            overall_health_status TEXT,               -- 'Healthy', 'Warning', or 'Fail'
+
+            FOREIGN KEY (dataset_id) REFERENCES ODP_datasets (dataset_id) ON DELETE CASCADE
+        )
+    """)
+
+    # ─── Indexes for Query Optimization ───
+
+    # Index for joining evaluations with datasets
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_eval_dataset
+        ON evaluations (dataset_id, evaluated_at DESC)
+    """)
+
+    conn.commit()
+    conn.close()
+    logger.debug("Evaluations table initialized")
 
 # ────────────────────────────────────────────────────────────
 # DATABASE OPERATIONS
@@ -576,6 +634,9 @@ def main():
 
     # Parse arguments
     args = parse_arguments()
+
+    # Initialize evaluations table (if not exists)
+    init_evaluation_tables()
 
     # Step 1: Fetch datasets needing evaluation
     logger.info(f"Step 1: Fetching datasets needing evaluation...")
