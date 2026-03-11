@@ -1,0 +1,16 @@
+# Cambridge ODP Evaluation Pipeline - Python Dependencies
+
+# Core dependencies
+requests>=2.31.0           # HTTP library for API calls
+pandas>=2.1.0              # Data analysis and manipulation
+openpyxl>=3.1.0            # Excel file support
+
+# Configuration management
+python-dotenv>=1.0.0       # Load environment variables from .env file
+
+# LLM API clients
+openai>=1.3.0              # OpenAI GPT API client
+anthropic>=0.7.0           # Anthropic Claude API client
+
+# Database (built-in with Python, no installation needed)
+# sqlite3 - included in Python standard library

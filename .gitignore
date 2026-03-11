@@ -189,3 +189,8 @@ datasets.csv
 # Excel exports
 *.xlsx
 cambridge_odp_export.xlsx
+
+# Environment configuration files (contain sensitive API keys)
+.env
+.env.local
+.env.*.local
