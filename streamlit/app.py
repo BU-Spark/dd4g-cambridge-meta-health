@@ -51,6 +51,14 @@ def load_data() -> pd.DataFrame:
         LEFT JOIN llm_results  l ON d.id = l.id
     """, conn)
     conn.close()
+    
+    # Convert binary columns (0/1) to human-readable "Yes"/"No" for display
+    binary_cols = ['missing_description', 'missing_tags', 'missing_license', 
+                   'missing_department', 'missing_category', 'is_stale']
+    for col in binary_cols:
+        if col in df.columns:
+            df[col] = df[col].map({1: "Yes", 0: "No"})
+    
     return df
 
 
@@ -137,11 +145,11 @@ if selected_bands:
 # Only filter stale if updateFrequency requires updates
 if stale_only:
     active_freqs_temp = filtered[~filtered["updateFrequency"].isin(["historical", "as needed", "never", "not planned"])]
-    filtered = active_freqs_temp[active_freqs_temp["is_stale"] == 1]
+    filtered = active_freqs_temp[active_freqs_temp["is_stale"] == "Yes"]
 if no_lic_only:
-    filtered = filtered[filtered["missing_license"] == 1]
+    filtered = filtered[filtered["missing_license"] == "Yes"]
 if no_tags_only:
-    filtered = filtered[filtered["missing_tags"] == 1]
+    filtered = filtered[filtered["missing_tags"] == "Yes"]
 
 # ── Header & KPIs ─────────────────────────────────────────────────────────────
 st.markdown("## Cambridge Open Data — Metadata Health Dashboard")
@@ -153,9 +161,9 @@ k2.metric("Avg Health Score",  f"{filtered['health_score'].mean():.1f}" if not f
 k3.metric("Critical",          int((filtered["health_band"] == "Critical").sum()))
 # Only count stale for datasets that need regular updates
 stale_count_filtered = filtered[~filtered["updateFrequency"].isin(["historical", "as needed", "never", "not planned"])]
-k4.metric("Stale",          int(stale_count_filtered["is_stale"].sum()))
-k5.metric("Missing License",   int(filtered["missing_license"].sum()))
-k6.metric("Missing Tags", int(filtered["missing_tags"].sum()))
+k4.metric("Stale",          int((stale_count_filtered["is_stale"] == "Yes").sum()))
+k5.metric("Missing License",   int((filtered["missing_license"] == "Yes").sum()))
+k6.metric("Missing Tags", int((filtered["missing_tags"] == "Yes").sum()))
 
 st.markdown("---")
 
@@ -183,11 +191,11 @@ with tab1:
     c1.plotly_chart(fig_donut, use_container_width=True)
 
     missing = {
-        "Tags":        int(filtered["missing_tags"].sum()),
-        "License":     int(filtered["missing_license"].sum()),
-        "Description": int(filtered["missing_description"].sum()),
-        "Department":  int(filtered["missing_department"].sum()),
-        "Category":    int(filtered["missing_category"].sum()),
+        "Tags":        int((filtered["missing_tags"] == "Yes").sum()),
+        "License":     int((filtered["missing_license"] == "Yes").sum()),
+        "Description": int((filtered["missing_description"] == "Yes").sum()),
+        "Department":  int((filtered["missing_department"] == "Yes").sum()),
+        "Category":    int((filtered["missing_category"] == "Yes").sum()),
     }
     fig_missing = px.bar(x=list(missing.keys()), y=list(missing.values()),
                          labels={"x": "Field", "y": "# Datasets Missing"},
@@ -220,10 +228,13 @@ with tab1:
     # Exclude historical, as-needed, never, not planned (these don't expire)
     active_freqs = filtered[~filtered["updateFrequency"].isin(["historical", "as needed", "never", "not planned"])]
     
-    stale_freq = (active_freqs.groupby("updateFrequency")["is_stale"]
-                  .agg(["sum", "count"]).reset_index()
-                  .rename(columns={"sum": "Stale", "count": "Total",
-                                   "updateFrequency": "Frequency"}))
+    stale_freq = active_freqs.groupby("updateFrequency")["is_stale"].apply(
+                  lambda x: (x == "Yes").sum()
+                  ).reset_index()
+    stale_total = active_freqs.groupby("updateFrequency").size().reset_index(name="Total")
+    stale_freq = stale_freq.merge(stale_total, on="updateFrequency")
+    stale_freq.columns = ["Frequency", "Stale", "Total"]
+    stale_freq = stale_freq.reset_index(drop=True)
     stale_freq["Pct Stale"] = (stale_freq["Stale"] / stale_freq["Total"] * 100).round(1)
     stale_freq = stale_freq.dropna(subset=["Frequency"]).sort_values("Pct Stale", ascending=False)
     fig_stale = px.bar(stale_freq, x="Frequency", y="Pct Stale",
@@ -253,19 +264,19 @@ with tab2:
                 c2.markdown(f"**Last Updated:** {str(row['dataUpdatedAt'] or row['updatedAt'] or 'Unknown')[:10]}")
                 # Only show stale status for datasets that need regular updates
                 is_active_freq = row["updateFrequency"] not in ["historical", "as needed", "never", "not planned"]
-                stale_label = f"Yes ({row['days_overdue']} days overdue)" if (row["is_stale"] and is_active_freq) else "No"
+                stale_label = f"Yes ({row['days_overdue']} days overdue)" if (row["is_stale"] == "Yes" and is_active_freq) else "No"
                 c2.markdown(f"**Stale:** {stale_label}")
                 c3.markdown(f"**AI Desc Score:** {row['llm_desc_score'] or '—'}/5")
                 tag_count = len(json.loads(row["tags"])) if row["tags"] else 0
                 c3.markdown(f"**Tag Count:** {tag_count}")
 
                 flags = []
-                if row["missing_description"]: flags.append("No description")
-                if row["missing_tags"]:        flags.append("No tags")
-                if row["missing_license"]:     flags.append("No license")
+                if row["missing_description"] == "Yes": flags.append("No description")
+                if row["missing_tags"] == "Yes":        flags.append("No tags")
+                if row["missing_license"] == "Yes":     flags.append("No license")
                 # Only flag as stale if it's a dataset that needs regular updates
                 is_active_freq = row["updateFrequency"] not in ["historical", "as needed", "never", "not planned"]
-                if row["is_stale"] and is_active_freq:            flags.append("Stale")
+                if row["is_stale"] == "Yes" and is_active_freq:            flags.append("Stale")
                 if flags:
                     st.markdown("**Issues:** " + "  |  ".join(flags))
                 st.markdown(f"**Description:** {row['description'] or '*(empty)*'}")
@@ -301,18 +312,16 @@ with tab3:
                 if ca.button("Approve", key=f"app_{row['id']}"): 
                     save_approval(row["id"], edited_desc, row["llm_suggested_tags"], "approved", reviewer, edit_note)
                     ca.success("Approved!")
-                if cb.button("Approve Edited", key=f"edit_{row['id']}"): 
+                if cb.button("Approve Edited", key=f"edit_{row['id']}"):
                     save_approval(row["id"], edited_desc, row["llm_suggested_tags"], "edited", reviewer, edit_note)
                     cb.success("Saved as edited!")
                 if cc.button("Reject", key=f"rej_{row['id']}"):
                     save_approval(row["id"], None, None, "rejected", reviewer, edit_note)
-                    cc.warning("Rejected.")
-
 # ── TAB 4: AI TAGS ────────────────────────────────────────────────────────────
 with tab4:
     st.subheader("AI-Suggested Tags — Datasets with Missing Tags")
     reviewer_tags = "Automated"
-    tag_df = filtered[filtered["missing_tags"] == 1].sort_values("health_score")
+    tag_df = filtered[filtered["missing_tags"] == "Yes"].sort_values("health_score")
 
     if tag_df.empty:
         st.success("No datasets with missing tags in current filter.")
@@ -338,10 +347,10 @@ with tab4:
 
                     ca, cb = st.columns(2)
 
-                    if ca.button("Approve Tags", key=f"tappr_{row['id']}"): 
+                    if ca.button("Approve Tags", key=f"tappr_{row['id']}"):
                         save_approval(row["id"], None, raw_tags, "approved", reviewer_tags)
                         ca.success("Tags approved!")
-                    if cb.button("Reject Tags", key=f"trej_{row['id']}"): 
+                    if cb.button("Reject Tags", key=f"trej_{row['id']}"):
                         save_approval(row["id"], None, None, "rejected", reviewer_tags)
                         cb.warning("Rejected.")
                 else:
@@ -364,6 +373,8 @@ with tab5:
     ]
     available_cols = [c for c in export_cols if c in filtered.columns]
     export_df = filtered[available_cols].sort_values("health_score")
+    
+
 
     def style_band(val):
         colors = {"Critical": "background-color:#fde8e8",
@@ -392,7 +403,7 @@ with tab6:
 
     lic_counts = filtered["missing_license"].value_counts().reset_index()
     lic_counts.columns = ["Status", "Count"]
-    lic_counts["Status"] = lic_counts["Status"].map({0: "Has License", 1: "Missing License"})
+    lic_counts["Status"] = lic_counts["Status"].map({"No": "Has License", "Yes": "Missing License"})
     fig_lic = px.pie(lic_counts, names="Status", values="Count",
                      title="License Coverage (~25% expected missing)",
                      color="Status",
