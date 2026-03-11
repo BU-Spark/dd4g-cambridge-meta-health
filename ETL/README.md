@@ -10,8 +10,13 @@ A data pipeline to monitor and evaluate the health of datasets on the Cambridge 
 - **Static Health Checks:** Programmatic checks (e.g., is the license missing? is the data update overdue?).
 - **AI Metadata Evaluation:** LLM-based assessment of the description, tags, and categories for clarity and accuracy.
 
-3. **Storage:** SQLite database acting as the state manager.
+3. **Storage:** SQLite database acting as the state manager. A helper script
+   (`setup/reset_db.py`) can delete the database file when you need to run a
+   completely fresh ingest.
 4. **Visualize:** Streamlit dashboard to display health scores and metadata gaps.
+
+5. **Publish (`publish.py`):** After ingestion/evaluation the pipeline can
+   export the dataset to Parquet and push it to a HuggingFace data repository.
 
 ## Health Logic Definitions
 
@@ -135,3 +140,11 @@ JOIN evaluations e ON d.dataset_id = e.dataset_id
 WHERE e.id = (SELECT MAX(id) FROM evaluations WHERE dataset_id = d.dataset_id);
 
 ```
+
+### Step 4: Publish
+
+After evaluation completes the `publish.py` script can be run automatically via the
+pipeline orchestrator or executed manually. It exports the `ODP_datasets` table
+into a Parquet file and uploads it to a configured HuggingFace dataset
+repository using credentials stored in environment variables (`HF_TOKEN`,
+`HF_REPO`).

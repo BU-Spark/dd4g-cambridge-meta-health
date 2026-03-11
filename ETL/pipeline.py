@@ -288,6 +288,15 @@ def main():
 
         logger.info("")
 
+    # Step 3: Publish (if previous steps succeeded and not a dry run)
+    if success and not args.dry_run:
+        logger.info("STEP 3: PUBLISH")
+        logger.info("-" * 60)
+        if not run_script('publish.py'):
+            logger.error("Publish step failed!")
+            success = False
+        logger.info("")
+
     # Get final statistics
     stats_after = get_pipeline_stats()
     elapsed_time = time.time() - start_time
