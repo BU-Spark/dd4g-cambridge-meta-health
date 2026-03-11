@@ -9,7 +9,7 @@ from google import genai
 BASE_DIR = os.environ.get("BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 DB_PATH  = os.path.join(BASE_DIR, "data", "cambridge_metadata.db")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyDlwDGyBJ9NSUQfyKIll9vgnr6BXn2NIAc")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def ask_gemini(prompt: str, retries: int = 4) -> str:
