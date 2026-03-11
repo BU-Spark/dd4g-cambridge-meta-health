@@ -50,7 +50,7 @@ if __name__ == "__main__":
         scored = score_datasets()
 
         logging.info("Step 3: LLM enrichment (Gemini 1.5 Flash)...")
-        enriched = run_llm_enrichment(only_low_scores=True, score_threshold=40.0)
+        enriched = run_llm_enrichment(only_low_scores=True, score_threshold=65.0)
 
         log_run(run_id, started_at, fetched, scored, enriched, "success")
         logging.info(f"Pipeline complete — {fetched} fetched, {scored} scored, {enriched} enriched.")

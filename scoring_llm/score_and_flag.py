@@ -26,6 +26,12 @@ FREQUENCY_THRESHOLDS = {
 def compute_staleness(row) -> dict:
     """Dynamically evaluate staleness relative to dataset's own update frequency."""
     freq = (row.get("updateFrequency") or "").strip().lower()
+    
+    # Check for non-updating frequencies (historical, as-needed, not planned, never)
+    non_updating = ["historical", "as needed", "not planned", "never"]
+    if any(keyword in freq for keyword in non_updating):
+        return {"is_stale": 0, "days_overdue": 0, "freshness_score": 100.0}
+    
     threshold_days = FREQUENCY_THRESHOLDS.get(freq, 730)
 
     if threshold_days is None:

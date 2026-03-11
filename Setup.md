@@ -10,11 +10,13 @@ Automated metadata audit system for the [City of Cambridge Open Data Portal](htt
 
 ```
 cambridge-health-dashboard/
-├── app.py                        # Streamlit dashboard (6 tabs)
+├── streamlit/
+│   └── app.py                    # Streamlit dashboard (6 tabs)
 ├── fetch_data.py                 # Socrata API ingestion with retry logic
-├── score_and_flag.py             # 7-dimension scoring engine
-├── llm_enrich.py                 # Gemini 1.5 Flash AI enrichment
 ├── pipeline.py                   # Orchestrator: run all 3 steps in order
+├── scoring_llm/
+│   ├── score_and_flag.py         # 6-dimension scoring engine
+│   └── llm_enrich.py             # HuggingFace Meta-Llama-3-8B AI enrichment
 ├── requirements.txt
 ├── data/
 │   └── cambridge_metadata.db     # SQLite database
@@ -38,7 +40,7 @@ pip install -r requirements.txt
 Set environment variables:
 
 ```bash
-export GEMINI_API_KEY="your_gemini_key_here"
+export HF_TOKEN="your_huggingface_token_here"
 export BASE_DIR="$(pwd)"
 ```
 
@@ -60,8 +62,7 @@ streamlit run streamlit/app.py
 
 | Variable         | Purpose                                      |
 |------------------|----------------------------------------------|
-| GEMINI_API_KEY   | Google Gemini API key (free tier)            |
-| HF_TOKEN         | HuggingFace write token (for deployment)     |
+| HF_TOKEN         | HuggingFace API token (inference + deployment) |
 | BASE_DIR         | Root directory for data files (optional)     |
 
 ---
@@ -75,7 +76,7 @@ streamlit run streamlit/app.py
 | License presence    | 15%    | Present=100, missing=0                       |
 | Department          | 10%    | Present=100, missing=0                       |
 | Category            | 10%    | Present=100, missing=0                       |
-| Freshness           | 20%    | Dynamic per updateFrequency field            |
+| Freshness           | 25%    | Dynamic per updateFrequency field            |
 
 Health bands: Good (80-100) | Fair (60-79) | Poor (40-59) | Critical (0-39)
 
@@ -93,12 +94,12 @@ Staleness is evaluated against each dataset's own `updateFrequency`:
 
 ## Deployment (HuggingFace Spaces)
 
-1. Create Space at `huggingface.co/spaces/spark-dd4g/cambridge-health-dashboard`
+1. Create Space at `huggingface.co/spaces/your-user/cambridge-health-dashboard`
 2. Set type: **Streamlit**, visibility: **Private**
-3. Add `GEMINI_API_KEY` as a Space secret
-4. Push this repo to the Space git remote
-5. Add `GEMINI_API_KEY` and `HF_TOKEN` as GitHub repository secrets
-6. GitHub Actions will auto-push the updated DB daily at 6 AM UTC
+3. Add `HF_TOKEN` as a Space secret (needed for inference API + file uploads)
+4. Clone the Space repo and push this codebase
+5. Streamlit app will auto-start on deployment
+6. GitHub Actions can auto-sync database daily: set `HF_TOKEN` as GitHub secret
 
 ---
 
@@ -108,6 +109,6 @@ Staleness is evaluated against each dataset's own `updateFrequency`:
 |-------------------|----------------------------------------------|
 | datasets          | Raw metadata from Socrata API                |
 | health_flags      | Scores, flags, and sub-scores per dataset    |
-| llm_results       | Gemini AI suggestions and description scores |
+| llm_results       | HuggingFace LLM suggestions and scores       |
 | human_approvals   | Reviewer decisions with full audit trail     |
 | pipeline_runs     | Log of every pipeline execution              |

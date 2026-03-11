@@ -1,0 +1,11 @@
+id,name,original_description,suggested_description,llm_desc_score,llm_desc_feedback
+wyig-95wp,DogLicenseInternal,Internal dataset to serve data to our dog license search app.,"This dataset, DogLicenseInternal, contains information on dog licenses, including pet details, owner information, and license status. It includes over 60 columns of data, primarily related to dog characteristics, license history, and owner demographics. The dataset is categorized under General Government.",2,Vague app purpose
+99xk-ybak,Chargepoint - aggregated data,"Fleet and public charging data with added transforms for shiny app.
+Do not make public.","Fleet and public charging data with added transforms for an internal application. 
+
+Note: The data is intended to be non-public.",2,Extremely vague
+ymgn-4w4a,Chargepoint - station locations,for use in shiny app (Alix),"This dataset contains information on Chargepoint station locations, including geographic coordinates and the number of ports at each station. It includes details on station name, description, and an old description field. The dataset has six columns: old_description, lat, number of ports, long, stationname, and description.",2,Vague purpose
+mfs6-yu9a,Home Page Featured Story,,"This dataset contains information about home page featured stories, including a dataset ID, an image, title, and a link. The dataset is comprised of four columns. It is managed by an unspecified department within an unknown category.",1,No description provided
+tqxn-z38b,Python ETL Update Test Dataset,"Script we use to test the python ETL update process on milo. Keep it private, but please do not delete.","This dataset appears to be a test dataset containing information on individuals, with columns for Name and Age. 
+
+(Note: Department and Category information is Unknown.)",1,Completely uninformative

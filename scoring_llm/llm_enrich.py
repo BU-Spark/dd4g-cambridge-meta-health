@@ -4,25 +4,31 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from google import genai
+from huggingface_hub import InferenceClient
 
 BASE_DIR = os.environ.get("BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 DB_PATH  = os.path.join(BASE_DIR, "data", "cambridge_metadata.db")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-client = genai.Client(api_key=GEMINI_API_KEY)
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+client   = InferenceClient(token=HF_TOKEN)
+MODEL    = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 
-def ask_gemini(prompt: str, retries: int = 4) -> str:
+def ask_llm(prompt: str, retries: int = 4) -> str:
+    messages = [{"role": "user", "content": prompt}]
     for attempt in range(retries):
         try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt
+            response = client.chat_completion(
+                model=MODEL,
+                messages=messages,
+                max_tokens=300
             )
-            return response.text.strip()
+            return response.choices[0].message.content.strip()
         except Exception as e:
-            wait = 15 * (attempt + 1)  # 15s, 30s, 45s, 60s
+            if "402" in str(e) or "Payment Required" in str(e):
+                print("*** QUOTA EXHAUSTED — wait and rerun ***")
+                raise SystemExit(1)
+            wait = 15 * (attempt + 1)
             if attempt < retries - 1:
                 print(f"    Rate limited, waiting {wait}s...")
                 time.sleep(wait)
@@ -69,11 +75,11 @@ Scoring rubric (integer 1-5):
 Required output (JSON only):
 {{
   "score": <integer 1-5>,
-  "feedback": "<2-5 words explaining the score>",
+  "feedback": "<2-5 words explaining the score>"
 }}"""
 
-    raw    = ask_gemini(prompt)
-    result = parse_json_safe(raw, {"score": 1, "feedback": "Parse failed.", "is_meaningful": False})
+    raw    = ask_llm(prompt)
+    result = parse_json_safe(raw, {"score": 1, "feedback": "Parse failed."})
     score  = result.get("score", 1)
     if score not in [1, 2, 3, 4, 5]:
         score = 1
@@ -98,7 +104,7 @@ Metadata:
 
 Return ONLY the description text or INSUFFICIENT_DATA. No preamble, no explanation."""
 
-    return ask_gemini(prompt)
+    return ask_llm(prompt)
 
 
 def score_tag_match(name, description, tags):
@@ -129,7 +135,7 @@ SCORE: [1-5]
 FEEDBACK: [one sentence]"""
 
     try:
-        text = ask_gemini(prompt)
+        text = ask_llm(prompt)
         print(f"    Tag score response: {text[:100]}")
 
         score = None
@@ -179,7 +185,7 @@ If insufficient info, respond: INSUFFICIENT_DATA
 Return ONLY a JSON array of strings. No explanation, no markdown.
 Example: ["open-data", "transportation", "cambridge"]"""
 
-    raw    = ask_gemini(prompt)
+    raw    = ask_llm(prompt)
     result = parse_json_safe(raw, [])
     if isinstance(result, list):
         return [str(t).strip() for t in result if t]
@@ -265,7 +271,7 @@ def run_llm_enrichment(only_low_scores: bool = True, score_threshold: float = 65
         query += f" WHERE h.health_score < {score_threshold} OR h.health_score IS NULL"
 
     df = pd.read_sql(query, conn)
-    print(f"  Running Gemini LLM on {len(df)} datasets...")
+    print(f"  Running LLM on {len(df)} datasets...")
 
     enriched_count = 0
     for i, row in df.iterrows():

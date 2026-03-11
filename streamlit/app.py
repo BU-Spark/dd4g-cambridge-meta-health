@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(
     page_title="Cambridge Open Data — Health Monitor",
-    page_icon="\U0001f3d9\ufe0f",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -28,7 +28,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 BAND_COLORS = {"Critical": "#e74c3c", "Poor": "#e67e22", "Fair": "#f1c40f", "Good": "#2ecc71"}
-BAND_EMOJI  = {"Critical": "\U0001f534", "Poor": "\U0001f7e0", "Fair": "\U0001f7e1", "Good": "\U0001f7e2"}
+BAND_EMOJI  = {"Critical": "●", "Poor": "●", "Fair": "●", "Good": "●"}
 
 
 @st.cache_data(ttl=300)
@@ -99,12 +99,12 @@ df = load_data()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### \U0001f3d9\ufe0f Cambridge Open Data\n**Metadata Health Monitor**")
+    st.markdown("### Cambridge Open Data\n**Metadata Health Monitor**")
     st.caption(load_last_run())
     st.markdown("---")
     st.markdown("#### Filters")
 
-    search_query = st.text_input("\U0001f50d Search dataset name", "")
+    search_query = st.text_input("Search dataset name", "")
 
     dept_options   = sorted(df["department"].dropna().unique().tolist())
     selected_depts = st.multiselect("Department", dept_options, default=[])
@@ -117,9 +117,9 @@ with st.sidebar:
         default=["Critical", "Poor", "Fair", "Good"]
     )
 
-    stale_only   = st.toggle("\u26a0\ufe0f Stale datasets only",  value=False)
-    no_lic_only  = st.toggle("\U0001f513 Missing license only",    value=False)
-    no_tags_only = st.toggle("\U0001f3f7\ufe0f Missing tags only", value=False)
+    stale_only   = st.toggle("Stale datasets only",  value=False)
+    no_lic_only  = st.toggle("Missing license only",    value=False)
+    no_tags_only = st.toggle("Missing tags only", value=False)
 
     st.markdown("---")
     st.caption("Cambridge Open Data Portal\nReinhard Engels, Open Data Program")
@@ -134,35 +134,39 @@ if selected_cats:
     filtered = filtered[filtered["category"].isin(selected_cats)]
 if selected_bands:
     filtered = filtered[filtered["health_band"].isin(selected_bands)]
+# Only filter stale if updateFrequency requires updates
 if stale_only:
-    filtered = filtered[filtered["is_stale"] == 1]
+    active_freqs_temp = filtered[~filtered["updateFrequency"].isin(["historical", "as needed", "never", "not planned"])]
+    filtered = active_freqs_temp[active_freqs_temp["is_stale"] == 1]
 if no_lic_only:
     filtered = filtered[filtered["missing_license"] == 1]
 if no_tags_only:
     filtered = filtered[filtered["missing_tags"] == 1]
 
 # ── Header & KPIs ─────────────────────────────────────────────────────────────
-st.markdown("## \U0001f3d9\ufe0f Cambridge Open Data — Metadata Health Dashboard")
+st.markdown("## Cambridge Open Data — Metadata Health Dashboard")
 st.caption(f"Showing **{len(filtered)}** of **{len(df)}** datasets after filters")
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("\U0001f4e6 Total Datasets",    len(filtered))
-k2.metric("\U0001f4ca Avg Health Score",  f"{filtered['health_score'].mean():.1f}" if not filtered.empty else "—")
-k3.metric("\U0001f534 Critical",          int((filtered["health_band"] == "Critical").sum()))
-k4.metric("\u26a0\ufe0f Stale",          int(filtered["is_stale"].sum()))
-k5.metric("\U0001f513 Missing License",   int(filtered["missing_license"].sum()))
-k6.metric("\U0001f3f7\ufe0f Missing Tags", int(filtered["missing_tags"].sum()))
+k1.metric("Total Datasets",    len(filtered))
+k2.metric("Avg Health Score",  f"{filtered['health_score'].mean():.1f}" if not filtered.empty else "—")
+k3.metric("Critical",          int((filtered["health_band"] == "Critical").sum()))
+# Only count stale for datasets that need regular updates
+stale_count_filtered = filtered[~filtered["updateFrequency"].isin(["historical", "as needed", "never", "not planned"])]
+k4.metric("Stale",          int(stale_count_filtered["is_stale"].sum()))
+k5.metric("Missing License",   int(filtered["missing_license"].sum()))
+k6.metric("Missing Tags", int(filtered["missing_tags"].sum()))
 
 st.markdown("---")
 
 pending_count = len(filtered[filtered["llm_status"] == "pending_review"])
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "\U0001f4ca Overview",
-    "\U0001f6a8 Action Queue",
-    f"\U0001f4dd AI Descriptions ({pending_count} pending)",
-    "\U0001f3f7\ufe0f AI Tags",
-    "\U0001f4cb Spreadsheet View",
-    "\U0001f4c8 Trends"
+    "Overview",
+    "Action Queue",
+    f"AI Descriptions ({pending_count} pending)",
+    "AI Tags",
+    "Spreadsheet View",
+    "Trends"
 ])
 
 # ── TAB 1: OVERVIEW ───────────────────────────────────────────────────────────
@@ -212,7 +216,11 @@ with tab1:
                           color_continuous_scale="RdYlGn", range_color=[0, 100])
         st.plotly_chart(fig_dept, use_container_width=True)
 
-    stale_freq = (filtered.groupby("updateFrequency")["is_stale"]
+    # Only show stale status for datasets that need regular updates
+    # Exclude historical, as-needed, never, not planned (these don't expire)
+    active_freqs = filtered[~filtered["updateFrequency"].isin(["historical", "as needed", "never", "not planned"])]
+    
+    stale_freq = (active_freqs.groupby("updateFrequency")["is_stale"]
                   .agg(["sum", "count"]).reset_index()
                   .rename(columns={"sum": "Stale", "count": "Total",
                                    "updateFrequency": "Frequency"}))
@@ -226,7 +234,7 @@ with tab1:
 
 # ── TAB 2: ACTION QUEUE ───────────────────────────────────────────────────────
 with tab2:
-    st.subheader("\U0001f6a8 Datasets Needing Attention")
+    st.subheader("Datasets Needing Attention")
     st.caption("Sorted by health score (worst first). Expand a row for details.")
     action_df = filtered.sort_values("health_score").head(50)
 
@@ -238,22 +246,26 @@ with tab2:
             label = f"{emoji} {row['name']}  —  Score: {row['health_score']}  |  {row['health_band']}"
             with st.expander(label):
                 c1, c2, c3 = st.columns(3)
-                c1.markdown(f"**Department:** {row['department'] or '\u274c Missing'}")
-                c1.markdown(f"**Category:** {row['category'] or '\u274c Missing'}")
-                c1.markdown(f"**License:** {row['license'] or '\u274c Missing'}")
+                c1.markdown(f"**Department:** {row['department'] or 'Missing'}")
+                c1.markdown(f"**Category:** {row['category'] or 'Missing'}")
+                c1.markdown(f"**License:** {row['license'] or 'Missing'}")
                 c2.markdown(f"**Update Frequency:** {row['updateFrequency'] or 'Unknown'}")
                 c2.markdown(f"**Last Updated:** {str(row['dataUpdatedAt'] or row['updatedAt'] or 'Unknown')[:10]}")
-                stale_label = f"\u26a0\ufe0f Yes ({row['days_overdue']} days overdue)" if row["is_stale"] else "\u2705 No"
+                # Only show stale status for datasets that need regular updates
+                is_active_freq = row["updateFrequency"] not in ["historical", "as needed", "never", "not planned"]
+                stale_label = f"Yes ({row['days_overdue']} days overdue)" if (row["is_stale"] and is_active_freq) else "No"
                 c2.markdown(f"**Stale:** {stale_label}")
                 c3.markdown(f"**AI Desc Score:** {row['llm_desc_score'] or '—'}/5")
                 tag_count = len(json.loads(row["tags"])) if row["tags"] else 0
                 c3.markdown(f"**Tag Count:** {tag_count}")
 
                 flags = []
-                if row["missing_description"]: flags.append("\U0001f6ab No description")
-                if row["missing_tags"]:        flags.append("\U0001f3f7\ufe0f No tags")
-                if row["missing_license"]:     flags.append("\U0001f513 No license")
-                if row["is_stale"]:            flags.append("\u23f0 Stale")
+                if row["missing_description"]: flags.append("No description")
+                if row["missing_tags"]:        flags.append("No tags")
+                if row["missing_license"]:     flags.append("No license")
+                # Only flag as stale if it's a dataset that needs regular updates
+                is_active_freq = row["updateFrequency"] not in ["historical", "as needed", "never", "not planned"]
+                if row["is_stale"] and is_active_freq:            flags.append("Stale")
                 if flags:
                     st.markdown("**Issues:** " + "  |  ".join(flags))
                 st.markdown(f"**Description:** {row['description'] or '*(empty)*'}")
@@ -286,19 +298,19 @@ with tab3:
                 edit_note = st.text_input("Reviewer note (optional):", key=f"note_{row['id']}")
 
                 ca, cb, cc = st.columns(3)
-                if ca.button("\u2705 Approve", key=f"app_{row['id']}"):
+                if ca.button("Approve", key=f"app_{row['id']}"): 
                     save_approval(row["id"], edited_desc, row["llm_suggested_tags"], "approved", reviewer, edit_note)
                     ca.success("Approved!")
-                if cb.button("\u270f\ufe0f Approve Edited", key=f"edit_{row['id']}"):
+                if cb.button("Approve Edited", key=f"edit_{row['id']}"): 
                     save_approval(row["id"], edited_desc, row["llm_suggested_tags"], "edited", reviewer, edit_note)
                     cb.success("Saved as edited!")
-                if cc.button("\u274c Reject", key=f"rej_{row['id']}"):
+                if cc.button("Reject", key=f"rej_{row['id']}"):
                     save_approval(row["id"], None, None, "rejected", reviewer, edit_note)
                     cc.warning("Rejected.")
 
 # ── TAB 4: AI TAGS ────────────────────────────────────────────────────────────
 with tab4:
-    st.subheader("\U0001f3f7\ufe0f AI-Suggested Tags — Datasets with Missing Tags")
+    st.subheader("AI-Suggested Tags — Datasets with Missing Tags")
     reviewer_tags = "Automated"
     tag_df = filtered[filtered["missing_tags"] == 1].sort_values("health_score")
 
@@ -326,10 +338,10 @@ with tab4:
 
                     ca, cb = st.columns(2)
 
-                    if ca.button("\u2705 Approve Tags", key=f"tappr_{row['id']}"):
+                    if ca.button("Approve Tags", key=f"tappr_{row['id']}"): 
                         save_approval(row["id"], None, raw_tags, "approved", reviewer_tags)
                         ca.success("Tags approved!")
-                    if cb.button("\u274c Reject Tags", key=f"trej_{row['id']}"):
+                    if cb.button("Reject Tags", key=f"trej_{row['id']}"): 
                         save_approval(row["id"], None, None, "rejected", reviewer_tags)
                         cb.warning("Rejected.")
                 else:
@@ -337,7 +349,7 @@ with tab4:
 
 # ── TAB 5: SPREADSHEET VIEW ───────────────────────────────────────────────────
 with tab5:
-    st.subheader("\U0001f4cb Spreadsheet View — Full Dataset Table")
+    st.subheader("Spreadsheet View — Full Dataset Table")
     st.caption("Reflects your current sidebar filters. Export includes all visible rows.")
 
     export_cols = [
@@ -366,7 +378,7 @@ with tab5:
     )
 
     st.download_button(
-        label="\u2b07\ufe0f Export Filtered View as CSV (ODP Format)",
+        label="Export Filtered View as CSV (ODP Format)",
         data=to_csv_bytes(export_df),
         file_name=f"cambridge_metadata_health_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv",
@@ -375,7 +387,7 @@ with tab5:
 
 # ── TAB 6: TRENDS ─────────────────────────────────────────────────────────────
 with tab6:
-    st.subheader("\U0001f4c8 Metadata Health Trends & Analysis")
+    st.subheader("Metadata Health Trends & Analysis")
     c1, c2 = st.columns(2)
 
     lic_counts = filtered["missing_license"].value_counts().reset_index()
@@ -411,7 +423,7 @@ with tab6:
                            xaxis_title="Dimension", yaxis_title="Avg Score")
     st.plotly_chart(fig_dims, use_container_width=True)
 
-    st.markdown("#### \U0001f4c5 Datasets Overdue Relative to Update Frequency")
+    st.markdown("#### Datasets Overdue Relative to Update Frequency")
     two_yr_df = filtered[filtered["days_overdue"] > 0].sort_values("days_overdue", ascending=False)
     if two_yr_df.empty:
         st.success("No datasets are overdue relative to their update frequency.")
