@@ -869,9 +869,14 @@ def main():
             # Save to database
             save_evaluation(dataset['dataset_id'], evaluation_result)
 
-            # Update summary
-            status = evaluation_result['overall_health_status'].lower()
-            results_summary[status] += 1
+            # Update summary (map health labels to summary categories)
+            label = evaluation_result['overall_health_label']  # 'good', 'fair', 'poor', or 'critical'
+            if label == 'good':
+                results_summary['healthy'] += 1
+            elif label in ('fair', 'poor'):
+                results_summary['warning'] += 1
+            elif label == 'critical':
+                results_summary['fail'] += 1
 
         except Exception as e:
             logger.error(f"Failed to evaluate {dataset.get('dataset_id')}: {e}")

@@ -18,7 +18,8 @@ import time
 from typing import Dict, Any
 from dotenv import load_dotenv
 import logging
-import google.generativeai as genai
+from google import genai
+from huggingface_hub import InferenceClient
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,10 @@ def get_config() -> Dict[str, Any]:
 
     Returns:
         Dictionary with configuration keys including:
-        - llm_provider: Which LLM service to use ('gemini', 'openai', or 'anthropic')
-        - API keys for each provider
-        - Model names
+        - llm_provider: Which LLM service to use ('gemini', 'openai',
+          'anthropic', or 'huggingface')
+        - API keys or tokens for each provider
+        - Model names/IDs
         - LLM parameters (temperature, max_tokens)
     """
     return {
@@ -46,9 +48,11 @@ def get_config() -> Dict[str, Any]:
         'gemini_api_key': os.getenv('GEMINI_API_KEY'),
         'openai_api_key': os.getenv('OPENAI_API_KEY'),
         'anthropic_api_key': os.getenv('ANTHROPIC_API_KEY'),
-        'gemini_model': os.getenv('GEMINI_MODEL', 'gemini-2.0-flash'),
+        'hf_token': os.getenv('HF_TOKEN'),
+        'gemini_model': os.getenv('GEMINI_MODEL', 'gemini-2.0-flash-exp'),
         'openai_model': os.getenv('OPENAI_MODEL', 'gpt-4'),
         'anthropic_model': os.getenv('ANTHROPIC_MODEL', 'claude-3-sonnet-20240229'),
+        'hf_model': os.getenv('HF_MODEL', 'meta-llama/Meta-Llama-3-8B-Instruct'),
         'temperature': float(os.getenv('LLM_TEMPERATURE', '0.3')),
         'max_tokens': int(os.getenv('LLM_MAX_TOKENS', '1000')),
     }
@@ -282,14 +286,14 @@ class GeminiClient(BaseLLMClient):
     Implements the BaseLLMClient interface with retry logic and exponential backoff.
     """
 
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash",
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-exp",
                  temperature: float = 0.3, max_tokens: int = 1000):
         """
         Initialize Gemini client.
 
         Args:
             api_key: Google AI API key
-            model: Model name (default: gemini-2.0-flash)
+            model: Model name (default: gemini-2.0-flash-exp)
             temperature: Sampling temperature (0.0-1.0)
             max_tokens: Maximum tokens to generate
         """
@@ -317,7 +321,11 @@ class GeminiClient(BaseLLMClient):
             try:
                 response = self.client.models.generate_content(
                     model=self.model,
-                    contents=prompt
+                    contents=prompt,
+                    config=genai.types.GenerateContentConfig(
+                        temperature=self.temperature,
+                        max_output_tokens=self.max_tokens,
+                    )
                 )
                 return response.text.strip()
             except Exception as e:
@@ -354,12 +362,112 @@ class GeminiClient(BaseLLMClient):
         }
 
 
+class HuggingFaceClient(BaseLLMClient):
+    """
+    Hugging Face Inference API client for dataset metadata evaluation.
+
+    Uses the `huggingface_hub` InferenceClient with a cooldown between calls
+    to avoid rate limits. Evaluations are expected to return a JSON string
+    containing the same keys as other clients.
+    """
+
+    def __init__(self, api_key: str, model: str,
+                 temperature: float = 0.3, max_tokens: int = 1000,
+                 delay_seconds: int = 30):
+        """
+        Initialize Hugging Face client.
+
+        Args:
+            api_key: HF access token
+            model: HF model ID (e.g. 'meta-llama/Meta-Llama-3-8B-Instruct')
+            temperature: Sampling temperature (ignored by some HF endpoints)
+            max_tokens: Maximum tokens to request
+            delay_seconds: Number of seconds to sleep between requests
+        """
+        self.api_key = api_key
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.delay_seconds = delay_seconds
+        self.client = InferenceClient(token=api_key)
+        logger.info(f"HuggingFace client initialized (model: {model})")
+
+    def call_llm(self, prompt: str) -> str:
+        """
+        Wrapper that returns raw text response from the Hugging Face model.
+
+        This is provided for compatibility with existing code (evaluate.py)
+        which uses `llm_client.call_llm()` directly.  Internally this method
+        simply invokes `self.client.text_generation` and applies the same
+        rate-limit delay as the evaluate() method.
+        """
+        logger.debug("Sending prompt to HuggingFace model (raw call)")
+        try:
+            response = self.client.chat_completion(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a data evaluator. Respond only in JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=self.max_tokens,
+                temperature=self.temperature
+            )
+            content = response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"HuggingFace API call failed: {e}")
+            content = ""
+        # delay regardless of success to avoid rate limiting
+        time.sleep(self.delay_seconds)
+        return content
+
+    def evaluate(self, prompt: str) -> Dict[str, Any]:
+        """
+        Call the Hugging Face Inference API with the evaluation prompt.
+
+        A delay of `delay_seconds` is enforced after each call to avoid hitting
+        API rate limits.
+
+        Args:
+            prompt: The evaluation prompt
+
+        Returns:
+            Dictionary with evaluation scores
+        """
+        logger.debug("Sending prompt to HuggingFace model")
+        try:
+            response_text = self.call_llm(prompt)
+            # try to parse JSON from the model output
+            try:
+                import json
+                result = json.loads(response_text)
+            except Exception:
+                # if parsing fails, log and return fallbacks
+                logger.warning("Failed to parse JSON from HuggingFace response")
+                result = {}
+
+            return {
+                'ai_description_score': result.get('description_score', 0.0),
+                'ai_tag_relevance_score': result.get('tag_score', 0.0),
+                'ai_category_fit_score': result.get('category_score', 0.0),
+                'ai_suggestions': result.get('suggestions', '')
+            }
+        except Exception as e:
+            logger.error(f"HuggingFace evaluate() failed: {e}")
+            return {
+                'ai_description_score': 0.0,
+                'ai_tag_relevance_score': 0.0,
+                'ai_category_fit_score': 0.0,
+                'ai_suggestions': ''
+            }
+
+
 def get_llm_client() -> BaseLLMClient:
     """
     Get configured LLM client based on environment settings.
 
     This factory function reads the LLM_PROVIDER environment variable
-    and returns the appropriate client instance (Gemini, OpenAI, or Anthropic).
+    and returns the appropriate client instance (Gemini, OpenAI, Anthropic,
+    or HuggingFace).
 
     Returns:
         Configured LLM client instance
@@ -419,10 +527,25 @@ def get_llm_client() -> BaseLLMClient:
             max_tokens=config['max_tokens']
         )
 
+    elif provider == 'huggingface' or provider == 'hf':
+        api_key = config['hf_token']
+        if not api_key or api_key == 'your-hf-token-here':
+            raise ValueError(
+                "HF_TOKEN not set in .env file. "
+                "Copy .env.example to .env and add your Hugging Face token."
+            )
+
+        return HuggingFaceClient(
+            api_key=api_key,
+            model=config['hf_model'],
+            temperature=config['temperature'],
+            max_tokens=config['max_tokens']
+        )
+
     else:
         raise ValueError(
             f"Unsupported LLM provider: {provider}. "
-            f"Must be 'gemini', 'openai', or 'anthropic'."
+            f"Must be 'gemini', 'openai', 'anthropic', or 'huggingface'."
         )
 
 

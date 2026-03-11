@@ -118,18 +118,27 @@ def get_pipeline_stats() -> dict:
     evaluated = total_datasets - needs_evaluation
 
     # Health status counts from latest evaluations
+    # Check if evaluations table exists first
     cursor.execute("""
-        SELECT e.overall_health_status, COUNT(*)
-        FROM ODP_datasets d
-        JOIN evaluations e ON d.dataset_id = e.dataset_id
-        WHERE e.id = (
-            SELECT MAX(id)
-            FROM evaluations
-            WHERE dataset_id = d.dataset_id
-        )
-        GROUP BY e.overall_health_status
+        SELECT name FROM sqlite_master 
+        WHERE type='table' AND name='evaluations'
     """)
-    health_counts = dict(cursor.fetchall())
+    evaluations_table_exists = cursor.fetchone() is not None
+    
+    health_counts = {}
+    if evaluations_table_exists:
+        cursor.execute("""
+            SELECT e.overall_health_label, COUNT(*)
+            FROM ODP_datasets d
+            JOIN evaluations e ON d.dataset_id = e.dataset_id
+            WHERE e.id = (
+                SELECT MAX(id)
+                FROM evaluations
+                WHERE dataset_id = d.dataset_id
+            )
+            GROUP BY e.overall_health_label
+        """)
+        health_counts = dict(cursor.fetchall())
 
     conn.close()
 
@@ -137,9 +146,9 @@ def get_pipeline_stats() -> dict:
         'total_datasets': total_datasets,
         'needs_evaluation': needs_evaluation,
         'evaluated': evaluated,
-        'healthy': health_counts.get('Healthy', 0),
-        'warning': health_counts.get('Warning', 0),
-        'fail': health_counts.get('Fail', 0)
+        'healthy': health_counts.get('Good', 0),
+        'warning': health_counts.get('Fair', 0) + health_counts.get('Poor', 0),
+        'fail': health_counts.get('Critical', 0)
     }
 
 
@@ -289,7 +298,7 @@ def main():
         logger.info("")
 
     # Step 3: Publish (if previous steps succeeded and not a dry run)
-    if success and not args.dry_run:
+    if success and not args.dry_run and not args.ingest_only and not args.evaluate_only:
         logger.info("STEP 3: PUBLISH")
         logger.info("-" * 60)
         if not run_script('publish.py'):

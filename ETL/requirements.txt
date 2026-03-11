@@ -11,7 +11,10 @@ python-dotenv>=1.0.0       # Load environment variables from .env file
 # LLM API clients
 openai>=1.3.0              # OpenAI GPT API client
 anthropic>=0.7.0           # Anthropic Claude API client
-google-generativeai>=0.8.0 # Google Gemini API client
+google-genai>=0.2.0        # Google Gemini API client (new SDK)
+
+# Hugging Face inference client (used for metadata evaluations)
+huggingface-hub>=0.15.0
 
 # Database (built-in with Python, no installation needed)
 # sqlite3 - included in Python standard library

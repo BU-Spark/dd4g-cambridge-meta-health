@@ -58,25 +58,25 @@ streamlit run app.py
 
 ## Environment Variables
 
-| Variable         | Purpose                                      |
-|------------------|----------------------------------------------|
-| GEMINI_API_KEY   | Google Gemini API key (free tier)            |
-| HF_TOKEN         | HuggingFace write token (for deployment)     |
-| BASE_DIR         | Root directory for data files (optional)     |
+| Variable       | Purpose                                                                                     |
+| -------------- | ------------------------------------------------------------------------------------------- |
+| GEMINI_API_KEY | Google Gemini API key (free tier)                                                           |
+| HF_TOKEN       | HuggingFace token (write for deployment; also used for LLM_PROVIDER=huggingface evaluation) |
+| BASE_DIR       | Root directory for data files (optional)                                                    |
 
 ---
 
 ## Scoring Rubric (100 pts total)
 
-| Dimension           | Weight | Logic                                        |
-|---------------------|--------|----------------------------------------------|
-| Description quality | 25%    | LLM score 1-5 mapped to 0/25/50/80/100      |
-| Tag quality         | 15%    | 0 tags=0, 1-2=33, 3-4=67, 5+=100           |
-| License presence    | 15%    | Present=100, missing=0                       |
-| Department          | 10%    | Present=100, missing=0                       |
-| Category            | 10%    | Present=100, missing=0                       |
-| Freshness           | 20%    | Dynamic per updateFrequency field            |
-| Column metadata     | 5%     | >=50% columns described=100, else 0         |
+| Dimension           | Weight | Logic                                  |
+| ------------------- | ------ | -------------------------------------- |
+| Description quality | 25%    | LLM score 1-5 mapped to 0/25/50/80/100 |
+| Tag quality         | 15%    | 0 tags=0, 1-2=33, 3-4=67, 5+=100       |
+| License presence    | 15%    | Present=100, missing=0                 |
+| Department          | 10%    | Present=100, missing=0                 |
+| Category            | 10%    | Present=100, missing=0                 |
+| Freshness           | 20%    | Dynamic per updateFrequency field      |
+| Column metadata     | 5%     | >=50% columns described=100, else 0    |
 
 Health bands: Good (80-100) | Fair (60-79) | Poor (40-59) | Critical (0-39)
 
@@ -85,6 +85,7 @@ Health bands: Good (80-100) | Fair (60-79) | Poor (40-59) | Critical (0-39)
 ## Dynamic Staleness Logic
 
 Staleness is evaluated against each dataset's own `updateFrequency`:
+
 - Daily datasets flagged after 1 day overdue
 - Weekly after 7 days, Monthly after 30, Annually after 365
 - Historical/as-needed datasets are excluded from staleness checks
@@ -105,10 +106,10 @@ Staleness is evaluated against each dataset's own `updateFrequency`:
 
 ## Database Tables
 
-| Table             | Purpose                                      |
-|-------------------|----------------------------------------------|
-| datasets          | Raw metadata from Socrata API                |
-| health_flags      | Scores, flags, and sub-scores per dataset    |
-| llm_results       | Gemini AI suggestions and description scores |
-| human_approvals   | Reviewer decisions with full audit trail     |
-| pipeline_runs     | Log of every pipeline execution              |
+| Table           | Purpose                                      |
+| --------------- | -------------------------------------------- |
+| datasets        | Raw metadata from Socrata API                |
+| health_flags    | Scores, flags, and sub-scores per dataset    |
+| llm_results     | Gemini AI suggestions and description scores |
+| human_approvals | Reviewer decisions with full audit trail     |
+| pipeline_runs   | Log of every pipeline execution              |
