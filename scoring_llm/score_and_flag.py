@@ -62,11 +62,6 @@ def compute_tag_score(tags: list) -> float:
     else:        return 100.0
 
 
-def compute_col_metadata_score(col_descriptions: list) -> float:
-    if not col_descriptions:
-        return 0.0
-    filled = sum(1 for d in col_descriptions if d and str(d).strip())
-    return 100.0 if (filled / len(col_descriptions)) >= 0.5 else 0.0
 
 
 def health_band(score: float) -> str:
@@ -111,7 +106,7 @@ def score_datasets():
       Department           10%  (binary)
       Category             10%  (binary)
       Freshness            20%  (dynamic per updateFrequency)
-      Column metadata       5%  (>=50% columns described)
+      
     """
     conn = sqlite3.connect(DB_PATH)
     create_health_flags_table(conn)
@@ -138,11 +133,8 @@ def score_datasets():
         missing_dept = 0 if (pd.notna(row["department"]) and str(row["department"]).strip()) else 1
         missing_cat  = 0 if (pd.notna(row["category"]) and str(row["category"]).strip()) else 1
 
-        desc_text = str(row["description"]).strip() if pd.notna(row["description"]) else ""
-        if len(desc_text) == 0:      desc_score_raw = 0.0
-        elif len(desc_text) < 30:    desc_score_raw = 25.0
-        elif len(desc_text) < 100:   desc_score_raw = 50.0
-        else:                        desc_score_raw = 75.0
+        # Description scoring delegated to LLM (llm_enrich.py will populate this)
+        desc_score_raw = 0.0 if missing_desc else 50.0
 
         tag_score_raw      = compute_tag_score(tags)
         license_score_raw  = 0.0 if missing_lic  else 100.0
