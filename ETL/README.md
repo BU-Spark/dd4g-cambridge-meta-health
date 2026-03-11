@@ -31,20 +31,28 @@ CREATE TABLE evaluations (
     dataset_id TEXT NOT NULL,         -- Links to ODP_datasets.dataset_id
     evaluated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
-    -- AI Qualitative Scores (0.0 to 1.0)
-    ai_description_score REAL,        -- AI assessment of resource.description
-    ai_tag_relevance_score REAL,      -- AI assessment of classification.domain_tags
-    ai_category_fit_score REAL,       -- Does content match classification.domain_category?
-    ai_suggestions TEXT,              -- AI-generated tips for improvement
+    -- AI metadata scoring
+    description_score REAL,            -- {1,2,3,4,5}
+    description_feedback TEXT,         -- qualitative feedback
+    description_suggestion TEXT,       -- tip for improvement
 
-    -- Static Health Checks (Boolean/Flags)
-    is_update_late BOOLEAN,           -- Logic: data_updated_at vs maintenance_plan_details
-    has_license BOOLEAN,              -- Is the license field populated?
-    has_contact_email BOOLEAN,        -- Is contact_email null?
-    column_desc_completion REAL,      -- % of columns that have a description
+    tag_score REAL,                    -- {1,2,3,4,5}
+    tag_feedback TEXT,
+    tag_suggestion TEXT,
 
-    -- Final Calculated Grade
-    overall_health_status TEXT,       -- 'Healthy', 'Warning', 'Fail'
+    -- calculated flags / indicators
+    description_exists INTEGER,        -- 0/1
+    tags_count_score INTEGER,               -- 0/1
+    license_exists INTEGER,            -- 0/1
+    department_exists INTEGER,         -- 0/1
+    category_exists INTEGER,           -- 0/1
+    days_overdue INTEGER,              -- number of days update is late
+
+    freshness_score REAL,              -- derived freshness metric
+    overall_health_score REAL,         -- aggregated 0.0-1.0
+    overall_health_label TEXT,         -- 'good','fair','poor','critical'
+
+    scored_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (dataset_id) REFERENCES ODP_datasets (dataset_id)
 );
