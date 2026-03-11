@@ -45,10 +45,12 @@ def parse_json_safe(text: str, fallback) -> any:
 def score_description(name: str, description: str, department: str, category: str) -> tuple:
     prompt = f"""You are auditing metadata quality for a government open data portal.
 Evaluate the description quality of ONE dataset and return a JSON object.
-
 STRICT RULES:
-- Use ONLY the metadata provided below. Do not invent facts.
-- Return ONLY valid JSON — no markdown, no extra text.
+- Rate ONLY what is explicitly stated in the description provided
+- Do NOT add information about what the dataset SHOULD contain
+- Do NOT assume additional details not mentioned
+- Do NOT invent population sizes, dates, or statistics
+- If information is missing, that's what you rate - not a problem to fix
 
 Metadata:
 - Dataset Name: {name}
@@ -66,8 +68,7 @@ Scoring rubric (integer 1-5):
 Required output (JSON only):
 {{
   "score": <integer 1-5>,
-  "feedback": "<one sentence explaining the score>",
-  "is_meaningful": <true or false>
+  "feedback": "<2-5 words explaining the score>",
 }}"""
 
     raw    = ask_gemini(prompt)
@@ -98,22 +99,81 @@ Return ONLY the description text or INSUFFICIENT_DATA. No preamble, no explanati
 
     return ask_gemini(prompt)
 
+def score_tag_match(name, description, tags):
+    if not tags or not str(tags).strip():
+        return 1, "No tags suggested"
+
+    prompt = f"""You are evaluating how well a set of tags matches a government dataset.
+
+SCORING GUIDELINES:
+- Score 1: Tags are missing, generic, or mostly unrelated
+- Score 2: Tags are somewhat related but vague or weak
+- Score 3: Tags are broadly correct but not very specific
+- Score 4: Tags match the dataset well and are useful
+- Score 5: Tags are highly accurate, specific, and clearly aligned with the dataset
+
+STRICT RULES:
+- Judge only based on dataset name, description, and the provided tags
+- Do NOT assume extra context not written below
+- Penalize generic tags like "data", "government", or overly broad labels
+- Reward tags that would help a user find this dataset
+
+Dataset Name: {name}
+Description: {description or "(empty)"}
+Tags: {tags}
+
+Respond in EXACTLY this format:
+SCORE: [1-5]
+FEEDBACK: [one sentence]"""
+
+    try:
+        text = ask_gemini(prompt)
+        print(f"    Tag score response: {text[:100]}")
+
+        score = None
+        feedback = "No feedback"
+
+        for line in text.split("\n"):
+            line = line.strip()
+            if line.upper().startswith("SCORE:"):
+                try:
+                    score = int(''.join(filter(str.isdigit, line.split(":")[1])))
+                except Exception:
+                    pass
+            if line.upper().startswith("FEEDBACK:"):
+                feedback = line.split(":", 1)[1].strip()
+
+        if score is None or score not in [1, 2, 3, 4, 5]:
+            score = 1
+            feedback = f"Parse error. Raw: {text[:80]}"
+
+        return score, feedback
+    except Exception as e:
+        return 1, f"Error: {str(e)[:80]}"
+
 
 def suggest_tags(name: str, description: str, category: str) -> list:
     prompt = f"""You are tagging government datasets for a public open data portal.
 Suggest 3-5 relevant tags for the dataset below.
 
-STRICT RULES:
-- Tags must relate ONLY to concepts clearly present in the metadata.
-- Do NOT invent tags not supported by the name, description, or category.
-- Use short, lowercase, hyphenated format (e.g., "public-safety", "traffic-data").
-- Each tag must be semantically distinct.
+TAG GUIDELINES - Only use tags that:
+- Describe what the dataset ACTUALLY CONTAINS (based on name, description, category)
+- Are specific, not generic (e.g., "vaccine-records" NOT "health")
+- Are based on explicit information given - do NOT invent topics
+- Use lowercase, single words or hyphenated phrases
+- Are relevant to people searching for similar datasets
 
-Metadata:
-- Dataset Name: {name}
-- Category: {category or "Unknown"}
-- Description: {description or "(empty)"}
+INVALID TAGS - DO NOT SUGGEST:
+- Generic terms: "data", "information", "government", "dataset"
+- Assumptions about content not mentioned
+- Tags that duplicate the category already provided
+- Made-up topics not in the name/description/category
 
+Dataset: "{name}"
+Category: "{category or "Unknown"}"
+Description: "{description or "(empty)"}"
+
+If insufficient info, respond: INSUFFICIENT_DATA
 Return ONLY a JSON array of strings. No explanation, no markdown.
 Example: ["open-data", "transportation", "cambridge"]"""
 
@@ -214,13 +274,22 @@ def run_llm_enrichment(only_low_scores: bool = True, score_threshold: float = 65
         col_names = json.loads(row["col_names"]) if row["col_names"] else []
         columns_str = ", ".join(col_names) if col_names else (", ".join(columns) if columns else "Not available")
 
+        # Step 1 — Score the description
         desc_score, feedback = score_description(
             row["name"], row["description"], row["department"], row["category"]
         )
 
+        # Step 2 — Suggest tags
         suggested_tags_list = suggest_tags(row["name"], row["description"], row["category"])
         suggested_tags_str  = json.dumps(suggested_tags_list)
 
+        # Step 3 — Score the tag alignment  ← NEW
+        tag_score, tag_alignment_note = score_tag_match(
+            row["name"], row["description"], suggested_tags_str
+        )
+        print(f"    Tag alignment score: {tag_score}/5 — {tag_alignment_note}")
+
+        # Step 4 — Suggest new description only if score is very poor
         suggested_desc = None
         llm_status     = "reviewed"
         if desc_score <= 2:
@@ -228,30 +297,32 @@ def run_llm_enrichment(only_low_scores: bool = True, score_threshold: float = 65
                 row["name"], row["description"],
                 row["department"], row["category"], columns_str
             )
-    
+
         # Guard against API error strings being stored in DB
         if suggested_desc and suggested_desc.startswith("ERROR:"):
             suggested_desc = None
-            llm_status = "pending_review"  # will be retried on next run
+            llm_status = "pending_review"
         elif suggested_desc == "INSUFFICIENT_DATA":
             suggested_desc = None
             llm_status = "insufficient_data"
         else:
             llm_status = "pending_review"
 
+        # Step 5 — Save to DB
         conn.execute("""
             INSERT OR REPLACE INTO llm_results VALUES (?,?,?,?,?,?,?,?)
         """, (
             row["id"], desc_score, feedback,
             suggested_desc, suggested_tags_str,
-            None, llm_status,
+            tag_alignment_note,      # ← now actually saved, was None before
+            llm_status,
             datetime.now(timezone.utc).isoformat()
         ))
 
         update_health_score_with_llm(conn, row["id"], desc_score)
         conn.commit()
         enriched_count += 1
-        time.sleep(15)  # Respect Gemini free tier: ~15 RPM
+        time.sleep(15)
 
     conn.close()
     print(f"  LLM enrichment complete for {enriched_count} datasets.")
