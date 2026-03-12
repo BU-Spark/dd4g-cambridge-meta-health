@@ -103,12 +103,12 @@ def create_summary_sheet(conn):
         
         # Health status counts
         cursor.execute("""
-            SELECT overall_health_status, COUNT(*) 
-            FROM evaluations 
+            SELECT overall_health_label, COUNT(*)
+            FROM evaluations
             WHERE id IN (
                 SELECT MAX(id) FROM evaluations GROUP BY dataset_id
             )
-            GROUP BY overall_health_status
+            GROUP BY overall_health_label
         """)
         for status, count in cursor.fetchall():
             summary_data.append({"Metric": f"Status: {status}", "Value": count})
@@ -198,15 +198,21 @@ def export_to_excel():
                 d.page_views_total,
                 d.download_count,
                 d.last_evaluated_at,
-                e.overall_health_status,
-                e.ai_description_score,
-                e.ai_tag_relevance_score,
-                e.ai_category_fit_score,
-                e.column_desc_completion,
-                e.has_license,
-                e.has_contact_email,
-                e.is_update_late,
-                e.ai_suggestions
+                e.overall_health_label,
+                e.overall_health_score,
+                e.description_score,
+                e.description_feedback,
+                e.description_suggestion,
+                e.tag_score,
+                e.tag_feedback,
+                e.tag_suggestion,
+                e.description_exists,
+                e.tags_count_score,
+                e.license_exists,
+                e.department_exists,
+                e.category_exists,
+                e.days_overdue,
+                e.freshness_score
             FROM ODP_datasets d
             LEFT JOIN (
                 SELECT dataset_id, MAX(id) as latest_id

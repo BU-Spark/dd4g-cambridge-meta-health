@@ -373,7 +373,7 @@ class HuggingFaceClient(BaseLLMClient):
 
     def __init__(self, api_key: str, model: str,
                  temperature: float = 0.3, max_tokens: int = 1000,
-                 delay_seconds: int = 30):
+                 delay_seconds: int = 10):
         """
         Initialize Hugging Face client.
 
