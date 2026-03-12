@@ -1,5 +1,6 @@
-
-
+__pycache__
+venv
+.venv
 
 # Jetbrains Products
 # Covers JetBrains IDEs: IntelliJ, RubyMine, PhpStorm, AppCode, PyCharm, CLion, Android Studio, WebStorm and Rider
@@ -168,3 +169,29 @@ $RECYCLE.BIN/
 
 # .nfs files are created when an open file is removed but is still being accessed
 .nfs*
+
+# ──────────────────────────────────────────────────────────
+# Cambridge ODP Data Pipeline - Data Files
+# ──────────────────────────────────────────────────────────
+
+# ETL data directory containing SQLite database and raw API responses
+ETL/data/
+
+# SQLite database files (anywhere in project)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Raw API responses and intermediate data files
+raw_data.json
+datasets.csv
+
+# Excel exports
+*.xlsx
+cambridge_odp_export.xlsx
+
+# Environment configuration files (contain sensitive API keys)
+.env
+.env.local
+.env.*.local

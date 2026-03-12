@@ -4,24 +4,31 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from google import genai
+from huggingface_hub import InferenceClient
 
 BASE_DIR = os.environ.get("BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 DB_PATH  = os.path.join(BASE_DIR, "data", "cambridge_metadata.db")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-client = genai.Client(api_key=GEMINI_API_KEY)
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+client   = InferenceClient(token=HF_TOKEN)
+MODEL    = "meta-llama/Meta-Llama-3-8B-Instruct"
 
-def ask_gemini(prompt: str, retries: int = 4) -> str:
+
+def ask_llm(prompt: str, retries: int = 4) -> str:
+    messages = [{"role": "user", "content": prompt}]
     for attempt in range(retries):
         try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt
+            response = client.chat_completion(
+                model=MODEL,
+                messages=messages,
+                max_tokens=300
             )
-            return response.text.strip()
+            return response.choices[0].message.content.strip()
         except Exception as e:
-            wait = 15 * (attempt + 1)  # 15s, 30s, 45s, 60s
+            if "402" in str(e) or "Payment Required" in str(e):
+                print("*** QUOTA EXHAUSTED — wait and rerun ***")
+                raise SystemExit(1)
+            wait = 15 * (attempt + 1)
             if attempt < retries - 1:
                 print(f"    Rate limited, waiting {wait}s...")
                 time.sleep(wait)
@@ -68,11 +75,11 @@ Scoring rubric (integer 1-5):
 Required output (JSON only):
 {{
   "score": <integer 1-5>,
-  "feedback": "<2-5 words explaining the score>",
+  "feedback": "<2-5 words explaining the score>"
 }}"""
 
-    raw    = ask_gemini(prompt)
-    result = parse_json_safe(raw, {"score": 1, "feedback": "Parse failed.", "is_meaningful": False})
+    raw    = ask_llm(prompt)
+    result = parse_json_safe(raw, {"score": 1, "feedback": "Parse failed."})
     score  = result.get("score", 1)
     if score not in [1, 2, 3, 4, 5]:
         score = 1
@@ -97,7 +104,8 @@ Metadata:
 
 Return ONLY the description text or INSUFFICIENT_DATA. No preamble, no explanation."""
 
-    return ask_gemini(prompt)
+    return ask_llm(prompt)
+
 
 def score_tag_match(name, description, tags):
     if not tags or not str(tags).strip():
@@ -127,7 +135,7 @@ SCORE: [1-5]
 FEEDBACK: [one sentence]"""
 
     try:
-        text = ask_gemini(prompt)
+        text = ask_llm(prompt)
         print(f"    Tag score response: {text[:100]}")
 
         score = None
@@ -177,7 +185,7 @@ If insufficient info, respond: INSUFFICIENT_DATA
 Return ONLY a JSON array of strings. No explanation, no markdown.
 Example: ["open-data", "transportation", "cambridge"]"""
 
-    raw    = ask_gemini(prompt)
+    raw    = ask_llm(prompt)
     result = parse_json_safe(raw, [])
     if isinstance(result, list):
         return [str(t).strip() for t in result if t]
@@ -223,14 +231,14 @@ def update_health_score_with_llm(conn, dataset_id: str, llm_desc_score: int):
 
     row = conn.execute("""
         SELECT tag_score, license_score, dept_score, category_score,
-               freshness_score, col_metadata_score
+               freshness_score
         FROM health_flags WHERE id = ?
     """, (dataset_id,)).fetchone()
 
     if not row:
         return
 
-    tag_s, lic_s, dept_s, cat_s, fresh_s, col_s = row
+    tag_s, lic_s, dept_s, cat_s, fresh_s = row
 
     health = round(
         0.25 * desc_score_normalized +
@@ -238,8 +246,7 @@ def update_health_score_with_llm(conn, dataset_id: str, llm_desc_score: int):
         0.15 * lic_s +
         0.10 * dept_s +
         0.10 * cat_s +
-        0.20 * fresh_s +
-        0.05 * col_s,
+        0.25 * fresh_s,
         1
     )
     band = "Good" if health >= 80 else "Fair" if health >= 60 else "Poor" if health >= 40 else "Critical"
@@ -264,7 +271,7 @@ def run_llm_enrichment(only_low_scores: bool = True, score_threshold: float = 65
         query += f" WHERE h.health_score < {score_threshold} OR h.health_score IS NULL"
 
     df = pd.read_sql(query, conn)
-    print(f"  Running Gemini LLM on {len(df)} datasets...")
+    print(f"  Running LLM on {len(df)} datasets...")
 
     enriched_count = 0
     for i, row in df.iterrows():
@@ -283,7 +290,7 @@ def run_llm_enrichment(only_low_scores: bool = True, score_threshold: float = 65
         suggested_tags_list = suggest_tags(row["name"], row["description"], row["category"])
         suggested_tags_str  = json.dumps(suggested_tags_list)
 
-        # Step 3 — Score the tag alignment  ← NEW
+        # Step 3 — Score the tag alignment
         tag_score, tag_alignment_note = score_tag_match(
             row["name"], row["description"], suggested_tags_str
         )
@@ -297,16 +304,15 @@ def run_llm_enrichment(only_low_scores: bool = True, score_threshold: float = 65
                 row["name"], row["description"],
                 row["department"], row["category"], columns_str
             )
-
-        # Guard against API error strings being stored in DB
-        if suggested_desc and suggested_desc.startswith("ERROR:"):
-            suggested_desc = None
-            llm_status = "pending_review"
-        elif suggested_desc == "INSUFFICIENT_DATA":
-            suggested_desc = None
-            llm_status = "insufficient_data"
-        else:
-            llm_status = "pending_review"
+            # Guard only runs when suggest_description was called
+            if suggested_desc and suggested_desc.startswith("ERROR:"):
+                suggested_desc = None
+                llm_status = "pending_review"
+            elif suggested_desc == "INSUFFICIENT_DATA":
+                suggested_desc = None
+                llm_status = "insufficient_data"
+            else:
+                llm_status = "pending_review"
 
         # Step 5 — Save to DB
         conn.execute("""
@@ -314,7 +320,7 @@ def run_llm_enrichment(only_low_scores: bool = True, score_threshold: float = 65
         """, (
             row["id"], desc_score, feedback,
             suggested_desc, suggested_tags_str,
-            tag_alignment_note,      # ← now actually saved, was None before
+            tag_alignment_note,
             llm_status,
             datetime.now(timezone.utc).isoformat()
         ))

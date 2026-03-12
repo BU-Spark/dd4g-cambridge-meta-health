@@ -9,20 +9,25 @@ Automated metadata audit system for the [City of Cambridge Open Data Portal](htt
 ## Project Structure
 
 ```
-cambridge-health-dashboard/
-├── app.py                        # Streamlit dashboard (6 tabs)
-├── fetch_data.py                 # Socrata API ingestion with retry logic
-├── score_and_flag.py             # 7-dimension scoring engine
-├── llm_enrich.py                 # Gemini 1.5 Flash AI enrichment
-├── pipeline.py                   # Orchestrator: run all 3 steps in order
-├── requirements.txt
-├── data/
-│   └── cambridge_metadata.db     # SQLite database
-├── deploy/
-│   └── push_db.py                # Push DB to HuggingFace after refresh
+dd4g-cambridge-meta-health/
+├── ETL/                          # ETL Pipeline
+│   ├── pipeline.py               # Main orchestrator
+│   ├── ingest.py                 # Socrata API data ingestion
+│   ├── evaluate.py               # Dataset health evaluation
+│   ├── publish.py                # HuggingFace deployment
+│   ├── requirements.txt          # Python dependencies
+│   └── data/                     # SQLite database storage
+│       └── cambridge_metadata.db
+├── streamlit/
+│   └── app.py                    # Streamlit dashboard
+├── EDA/
+│   ├── EDA.ipynb                 # Exploratory data analysis
+│   └── fetch_data.py             # Data fetching utilities
+├── dataset-documentation/        # Dataset documentation
 └── .github/
     └── workflows/
-        └── refresh.yml           # GitHub Actions daily cron
+        ├── etl-pipeline.yml      # Daily ETL automation
+        └── DEPLOYMENT.md         # Workflow documentation
 ```
 
 ---
@@ -44,39 +49,75 @@ export BASE_DIR="$(pwd)"
 
 ---
 
-## Running
+## Running Locally
 
 ```bash
-# Full pipeline: fetch + score + LLM enrichment
+# Navigate to ETL directory
+cd ETL
+
+# Full pipeline: ingest + evaluate
 python pipeline.py
 
-# Dashboard only (requires DB to exist)
-streamlit run app.py
+# Run specific steps
+python pipeline.py --ingest-only    # Only fetch data
+python pipeline.py --evaluate-only  # Only run evaluations
+python pipeline.py --dry-run        # Preview without saving
+
+# Dashboard (from root directory)
+cd ..
+streamlit run streamlit/app.py
 ```
+
+---
+
+## Automated Deployment (GitHub Actions)
+
+The ETL pipeline runs automatically **daily at 2:00 AM UTC** via GitHub Actions.
+
+### Quick Start
+
+1. Configure API keys as GitHub Secrets (see [Workflow Documentation](.github/workflows/DEPLOYMENT.md))
+2. Pipeline runs automatically on schedule
+3. View results in **Actions** tab
+4. Download database artifacts for analysis
+
+### Manual Trigger
+
+1. Go to **Actions** tab → **Daily ETL Pipeline**
+2. Click **Run workflow**
+3. Select options (ingest-only, evaluate-only, dry-run)
+4. Click **Run workflow** button
+
+For full documentation, setup instructions, and troubleshooting, see:
+**[.github/workflows/DEPLOYMENT.md](.github/workflows/DEPLOYMENT.md)**
 
 ---
 
 ## Environment Variables
 
-| Variable         | Purpose                                      |
-|------------------|----------------------------------------------|
-| GEMINI_API_KEY   | Google Gemini API key (free tier)            |
-| HF_TOKEN         | HuggingFace write token (for deployment)     |
-| BASE_DIR         | Root directory for data files (optional)     |
+| Variable          | Purpose                                                       | Required?   |
+| ----------------- | ------------------------------------------------------------- | ----------- |
+| OPENAI_API_KEY    | OpenAI GPT API for metadata evaluation                        | Optional\*  |
+| ANTHROPIC_API_KEY | Anthropic Claude API for metadata evaluation                  | Optional\*  |
+| GOOGLE_API_KEY    | Google Gemini API for metadata evaluation                     | Optional\*  |
+| HUGGINGFACE_TOKEN | HuggingFace token for model access and deployment             | Recommended |
+| BASE_DIR          | Root directory for data files (defaults to current directory) | Optional    |
+
+**\*At least one LLM API key is required** for the evaluation step. The pipeline supports multiple LLM providers - configure the one you prefer to use.
 
 ---
 
 ## Scoring Rubric (100 pts total)
 
-| Dimension           | Weight | Logic                                        |
-|---------------------|--------|----------------------------------------------|
-| Description quality | 25%    | LLM score 1-5 mapped to 0/25/50/80/100      |
-| Tag quality         | 15%    | 0 tags=0, 1-2=33, 3-4=67, 5+=100           |
-| License presence    | 15%    | Present=100, missing=0                       |
-| Department          | 10%    | Present=100, missing=0                       |
-| Category            | 10%    | Present=100, missing=0                       |
-| Freshness           | 20%    | Dynamic per updateFrequency field            |
-| Column metadata     | 5%     | >=50% columns described=100, else 0         |
+| Dimension           | Weight | Logic                                  |
+| ------------------- | ------ | -------------------------------------- |
+| Description quality | 25%    | LLM score 1-5 mapped to 0/25/50/80/100 |
+| Tag quality         | 15%    | 0 tags=0, 1-2=33, 3-4=67, 5+=100       |
+| License presence    | 15%    | Present=100, missing=0                 |
+| Department          | 10%    | Present=100, missing=0                 |
+| Category            | 10%    | Present=100, missing=0                 |
+| Freshness           | 20%    | Dynamic per updateFrequency field      |
+| Column metadata     | 5%     | >=50% columns described=100, else 0    |
 
 Health bands: Good (80-100) | Fair (60-79) | Poor (40-59) | Critical (0-39)
 
@@ -85,6 +126,7 @@ Health bands: Good (80-100) | Fair (60-79) | Poor (40-59) | Critical (0-39)
 ## Dynamic Staleness Logic
 
 Staleness is evaluated against each dataset's own `updateFrequency`:
+
 - Daily datasets flagged after 1 day overdue
 - Weekly after 7 days, Monthly after 30, Annually after 365
 - Historical/as-needed datasets are excluded from staleness checks
@@ -105,10 +147,10 @@ Staleness is evaluated against each dataset's own `updateFrequency`:
 
 ## Database Tables
 
-| Table             | Purpose                                      |
-|-------------------|----------------------------------------------|
-| datasets          | Raw metadata from Socrata API                |
-| health_flags      | Scores, flags, and sub-scores per dataset    |
-| llm_results       | Gemini AI suggestions and description scores |
-| human_approvals   | Reviewer decisions with full audit trail     |
-| pipeline_runs     | Log of every pipeline execution              |
+| Table           | Purpose                                      |
+| --------------- | -------------------------------------------- |
+| datasets        | Raw metadata from Socrata API                |
+| health_flags    | Scores, flags, and sub-scores per dataset    |
+| llm_results     | Gemini AI suggestions and description scores |
+| human_approvals | Reviewer decisions with full audit trail     |
+| pipeline_runs   | Log of every pipeline execution              |
