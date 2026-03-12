@@ -102,6 +102,7 @@ def init_database() -> None:
             created_at TEXT,                          -- resource.createdAt
             updated_at TEXT,                          -- resource.updatedAt
             data_updated_at TEXT,                     -- resource.data_updated_at
+            metadata_updated_at TEXT,                 -- resource.metadata_updated_at
 
             -- Usage Metrics
             download_count INTEGER DEFAULT 0,
@@ -290,6 +291,7 @@ def parse_dataset(item: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": resource.get("createdAt"),
         "updated_at": resource.get("updatedAt"),
         "data_updated_at": resource.get("data_updated_at"),
+        "metadata_updated_at": resource.get("metadata_updated_at"),
 
         # Usage metrics (handle None by defaulting to 0)
         "download_count": resource.get("download_count", 0) or 0,

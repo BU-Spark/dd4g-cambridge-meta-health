@@ -132,6 +132,7 @@ def fetch_unevaluated_datasets(limit: Optional[int] = None) -> List[Dict[str, An
     Criteria for datasets needing evaluation:
     - last_evaluated_at IS NULL (never evaluated)
     - OR data_updated_at > last_evaluated_at (data refreshed since last eval)
+    - OR metadata_updated_at > last_evaluated_at (metadata refreshed since last eval)
 
     Args:
         limit: Maximum number of datasets to fetch (None = all)
@@ -147,6 +148,7 @@ def fetch_unevaluated_datasets(limit: Optional[int] = None) -> List[Dict[str, An
         SELECT * FROM ODP_datasets
         WHERE last_evaluated_at IS NULL
            OR data_updated_at > last_evaluated_at
+           OR metadata_updated_at > last_evaluated_at
         ORDER BY data_updated_at DESC
     """
 
