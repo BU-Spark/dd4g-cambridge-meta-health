@@ -18,6 +18,45 @@ A data pipeline to monitor and evaluate the health of datasets on the Cambridge 
 5. **Publish (`publish.py`):** After ingestion/evaluation the pipeline can
    export the dataset to Parquet and push it to a HuggingFace data repository.
 
+## Running the Pipeline
+
+### Local Execution
+
+```bash
+# Navigate to ETL directory
+cd ETL
+
+# Full pipeline (ingest + evaluate)
+python pipeline.py
+
+# Run specific steps
+python pipeline.py --ingest-only      # Only fetch data from Socrata
+python pipeline.py --evaluate-only    # Only run evaluations
+python pipeline.py --dry-run          # Preview without saving
+python pipeline.py --limit 10         # Evaluate only 10 datasets
+```
+
+### Automated Daily Execution (GitHub Actions)
+
+The pipeline is configured to run automatically **daily at 2:00 AM UTC** via GitHub Actions.
+
+**Workflow file:** `../.github/workflows/etl-pipeline.yml`
+
+**Features:**
+
+- Scheduled daily execution
+- Manual trigger with custom options
+- Automatic artifact archival (database snapshots)
+- Failure notifications and logging
+
+**Setup required:**
+
+1. Configure API keys as GitHub repository secrets
+2. Enable workflow in Actions tab
+3. Monitor runs and download artifacts as needed
+
+For detailed setup instructions, see: [`../.github/workflows/DEPLOYMENT.md`](../.github/workflows/DEPLOYMENT.md)
+
 ## Health Logic Definitions
 
 | Status      | AI Evaluation (Qualitative)                                            | Static Checks (Quantitative)                                              |
