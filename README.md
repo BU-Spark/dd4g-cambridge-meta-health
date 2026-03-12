@@ -344,7 +344,6 @@ BASE_DIR=/path/to/base/directory      # Optional: data location
 ## Contributors
 
 **SPARK DD4G Team | Spring 2026**
-- Aastha Gidwani — Project Lead
 - Boston University
 
 ---
