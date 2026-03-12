@@ -351,6 +351,23 @@ HF_TOKEN=your_huggingface_token       # Required for LLM inference
 BASE_DIR=/path/to/base/directory      # Optional: data location
 ```
 
+### Automated Data Refresh
+
+The system includes a GitHub Actions workflow that automatically refreshes data **every Monday at 2 AM UTC**:
+
+```yaml
+# Triggered by: .github/workflows/weekly-refresh.yml
+- Fetches latest datasets from Cambridge API
+- Re-scores all metadata quality dimensions
+- Generates AI-enhanced descriptions & tags
+- Syncs updated database to HuggingFace Spaces
+- Sends completion summary to Actions tab
+```
+
+**Setup:** Add `HF_TOKEN` secret to GitHub Settings → Secrets and variables → Actions (see [Setup.md](Setup.md#automated-weekly-refresh-github-actions) for details).
+
+**Manual Refresh:** `python pipeline.py && python deploy/push_db.py`
+
 ---
 
 ## Support

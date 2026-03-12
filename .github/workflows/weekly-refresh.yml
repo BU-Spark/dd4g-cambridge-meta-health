@@ -1,0 +1,81 @@
+name: Weekly Data Refresh Pipeline
+
+on:
+  schedule:
+    # Runs every Monday at 2 AM UTC (adjust as needed)
+    - cron: '0 2 * * 1'
+  workflow_dispatch:  # Allows manual triggering from Actions tab
+
+jobs:
+  refresh-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set environment variables
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          echo "HF_TOKEN=${{ secrets.HF_TOKEN }}" >> $GITHUB_ENV
+          echo "BASE_DIR=$(pwd)" >> $GITHUB_ENV
+
+      - name: Run data pipeline
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BASE_DIR: ${{ github.workspace }}
+        run: |
+          echo "Starting pipeline execution..."
+          python pipeline.py
+          if [ $? -eq 0 ]; then
+            echo "Pipeline completed successfully"
+          else
+            echo "Pipeline failed!"
+            exit 1
+          fi
+
+      - name: Push updated database to HuggingFace Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BASE_DIR: ${{ github.workspace }}
+        run: |
+          echo "Syncing database to HuggingFace Space..."
+          python deploy/push_db.py
+          if [ $? -eq 0 ]; then
+            echo "Database sync completed successfully"
+          else
+            echo "Database sync failed!"
+            exit 1
+          fi
+
+      - name: Create workflow summary
+        if: success()
+        run: |
+          echo "## Weekly Refresh Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pipeline Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+          echo "- **Database Updated:** ✅ Yes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Space Synced:** ✅ Yes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **HuggingFace Space:** [spark-dd4g/cambridge-health-dashboard](https://huggingface.co/spaces/spark-dd4g/cambridge-health-dashboard)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "## Weekly Refresh Failed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pipeline Status:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "**Action Required:** Check the logs above and fix the issue." >> $GITHUB_STEP_SUMMARY
+          exit 1

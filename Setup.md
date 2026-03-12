@@ -618,6 +618,57 @@ cp data/cambridge_metadata.db data/cambridge_metadata.db.backup_$(date +%Y%m%d)
 ls -t data/cambridge_metadata.db.backup_* | tail -n +6 | xargs rm
 ```
 
+### Automated Weekly Refresh (GitHub Actions)
+
+The system includes a fully automated weekly data refresh workflow that runs every Monday at 2 AM UTC.
+
+**What it does:**
+1. Fetches fresh data from the Cambridge Open Data Portal
+2. Re-scores all datasets with updated freshness metrics
+3. Regenerates AI enrichment (descriptions & tags)
+4. Syncs the updated database to HuggingFace Spaces
+5. Your dashboard automatically reflects the latest data
+
+**Setup Instructions:**
+
+1. **Add HuggingFace Token Secret**
+   - Go to GitHub → Settings → Secrets and variables → Actions
+   - Click "New repository secret"
+   - Name: `HF_TOKEN`
+   - Value: Your HuggingFace API token
+   - Click Add
+
+2. **Verify Workflow**
+   - Go to Actions tab in GitHub
+   - Look for "Weekly Data Refresh Pipeline"
+   - Confirm it's enabled (green checkmark)
+
+3. **Manual Trigger (Optional)**
+   - Go to Actions → "Weekly Data Refresh Pipeline"
+   - Click "Run workflow" → "Run workflow" button
+   - Monitor progress in real-time
+
+4. **View Logs**
+   - Actions tab → Click latest run
+   - See pipeline output, database sync status, timestamp
+   - Receives success/failure summary
+
+**Customizing Schedule:**
+Edit `.github/workflows/weekly-refresh.yml`:
+- Line 7: `- cron: '0 2 * * 1'` (currently Monday 2 AM UTC)
+- Examples:
+  - `'0 3 * * 0'` = Sunday 3 AM UTC
+  - `'0 9 * * 1-5'` = Weekdays 9 AM UTC
+  - `'0 */6 * * *'` = Every 6 hours
+
+**What happens if it fails:**
+- GitHub sends notification
+- Check Actions logs for error
+- Common issues: API rate limits, HuggingFace token expired
+- Run manually: `python pipeline.py && python deploy/push_db.py`
+
+---
+
 ### Deploying to Production
 
 See [deploy/README.md](deploy/README.md) for cloud deployment instructions.
