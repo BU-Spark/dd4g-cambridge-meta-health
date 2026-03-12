@@ -23,8 +23,11 @@ from huggingface_hub import InferenceClient
 
 logger = logging.getLogger(__name__)
 
-# Load .env file from the same directory as this script
-dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+# Load .env file from project root (two levels up from this script)
+# config.py location: dd4g-cambridge-meta-health/ETL/setup/config.py
+# .env location: dd4g-cambridge-meta-health/.env
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+dotenv_path = os.path.join(project_root, '.env')
 load_dotenv(dotenv_path)
 
 # ────────────────────────────────────────────────────────────
@@ -487,7 +490,7 @@ def get_llm_client() -> BaseLLMClient:
         if not api_key or api_key == 'your-gemini-api-key-here':
             raise ValueError(
                 "GEMINI_API_KEY not set in .env file. "
-                "Copy .env.example to .env and add your API key."
+                "Copy .env.example to .env in project root and add your API key."
             )
 
         return GeminiClient(
@@ -502,7 +505,7 @@ def get_llm_client() -> BaseLLMClient:
         if not api_key or api_key == 'sk-your-openai-api-key-here':
             raise ValueError(
                 "OPENAI_API_KEY not set in .env file. "
-                "Copy .env.example to .env and add your API key."
+                "Copy .env.example to .env in project root and add your API key."
             )
 
         return OpenAIClient(
@@ -517,7 +520,7 @@ def get_llm_client() -> BaseLLMClient:
         if not api_key or api_key == 'sk-ant-your-anthropic-api-key-here':
             raise ValueError(
                 "ANTHROPIC_API_KEY not set in .env file. "
-                "Copy .env.example to .env and add your API key."
+                "Copy .env.example to .env in project root and add your API key."
             )
 
         return AnthropicClient(
@@ -532,7 +535,7 @@ def get_llm_client() -> BaseLLMClient:
         if not api_key or api_key == 'your-hf-token-here':
             raise ValueError(
                 "HF_TOKEN not set in .env file. "
-                "Copy .env.example to .env and add your Hugging Face token."
+                "Copy .env.example to .env in project root and add your Hugging Face token."
             )
 
         return HuggingFaceClient(
@@ -559,4 +562,4 @@ try:
     logger.info(f"Configuration loaded (LLM provider: {config['llm_provider']})")
 except Exception as e:
     logger.warning(f"Configuration validation failed: {e}")
-    logger.warning("Make sure to create .env file from .env.example before running evaluations")
+    logger.warning("Make sure to create .env file from .env.example in project root before running evaluations")
