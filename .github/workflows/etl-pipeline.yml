@@ -1,11 +1,8 @@
 name: Daily ETL Pipeline
 
 on:
-  # Run daily at 2:00 AM UTC
   schedule:
     - cron: "0 2 * * *"
-
-  # Allow manual trigger from GitHub UI
   workflow_dispatch:
     inputs:
       ingest_only:
@@ -20,6 +17,10 @@ on:
         description: "Preview without saving"
         required: false
         default: "false"
+
+# Added this to allow the Action to write back to your repo
+permissions:
+  contents: write
 
 jobs:
   run-etl:
@@ -51,27 +52,21 @@ jobs:
 
       - name: Run ETL Pipeline
         env:
-          # API Keys and tokens (configure these in GitHub Secrets)
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           HUGGINGFACE_TOKEN: ${{ secrets.HUGGINGFACE_TOKEN }}
         run: |
           cd ETL
-
-          # Build command based on workflow inputs
           CMD="python pipeline.py"
-
           if [ "${{ github.event.inputs.ingest_only }}" == "true" ]; then
             CMD="$CMD --ingest-only"
           elif [ "${{ github.event.inputs.evaluate_only }}" == "true" ]; then
             CMD="$CMD --evaluate-only"
           fi
-
           if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
             CMD="$CMD --dry-run"
           fi
-
           echo "Running: $CMD"
           $CMD
 
@@ -82,6 +77,16 @@ jobs:
           name: etl-database-${{ github.run_number }}
           path: ETL/data/cambridge_metadata.db
           retention-days: 30
+
+      # FIXED: Corrected indentation and simplified Git logic
+      - name: Commit database to repository
+        if: success() && github.event.inputs.dry_run != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ETL/data/cambridge_metadata.db
+          git commit -m "Update database: Run ${{ github.run_number }}" || exit 0
+          git push
 
       - name: Upload logs on failure
         if: failure()
@@ -97,5 +102,3 @@ jobs:
         if: failure()
         run: |
           echo "::error::ETL Pipeline failed. Check the logs for details."
-          echo "Run ID: ${{ github.run_id }}"
-          echo "Run Number: ${{ github.run_number }}"
