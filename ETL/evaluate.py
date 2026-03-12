@@ -505,6 +505,7 @@ def build_evaluation_prompt_json(dataset: Dict[str, Any]) -> str:
     Build consolidated JSON-structured prompt for all LLM evaluations.
 
     OPTIMIZED: Requests all 4 evaluations in a single prompt to reduce API calls.
+    Uses strict prompts adapted from archived llm_enrich.py to prevent LLM hallucination.
 
     Requests:
     1. Description clarity scoring (1-5 + feedback)
@@ -521,6 +522,8 @@ def build_evaluation_prompt_json(dataset: Dict[str, Any]) -> str:
     # Extract dataset metadata
     title = dataset.get('title', 'N/A')
     description = dataset.get('description', '')
+    department = dataset.get('department', 'Unknown')
+    category = dataset.get('category', 'Unknown')
 
     try:
         tags = json.loads(dataset.get('tags', '[]'))
@@ -538,64 +541,117 @@ def build_evaluation_prompt_json(dataset: Dict[str, Any]) -> str:
     if len(cols) > 10:
         col_str += ', ...'
 
-    # Build comprehensive JSON prompt
-    prompt = f"""You are evaluating the metadata quality of an open data portal dataset.
+    # Build comprehensive JSON prompt with strict rules
+    prompt = f"""You are auditing metadata quality for a government open data portal.
+Evaluate this dataset across 4 dimensions and return a single JSON object.
 
-DATASET INFORMATION:
-- Title: "{title}"
-- Description: "{description}"
-- Tags: {tag_str}
-- Columns: {col_str}
+DATASET METADATA:
+- Dataset Name: "{title}"
+- Department: {department}
+- Category: {category}
+- Current Description: {description or "(empty)"}
+- Current Tags: {tag_str}
+- Column Names: {col_str}
 
-EVALUATION TASKS:
-Please evaluate this dataset across 4 dimensions and respond in strict JSON format.
+════════════════════════════════════════════════════════════════════════════════
+TASK 1: DESCRIPTION CLARITY SCORE
+════════════════════════════════════════════════════════════════════════════════
 
-1. DESCRIPTION CLARITY (score 1-5):
-   - 1 = Missing or completely unclear
-   - 2 = Vague, lacks essential details
-   - 3 = Basic but incomplete
-   - 4 = Clear and informative
-   - 5 = Excellent, comprehensive
+STRICT RULES:
+• Rate ONLY what is explicitly stated in the description provided
+• Do NOT add information about what the dataset SHOULD contain
+• Do NOT assume additional details not mentioned
+• Do NOT invent population sizes, dates, or statistics
+• If information is missing, that's what you rate - not a problem to fix
 
-   Provide a score and one-sentence feedback explaining your rating.
+SCORING RUBRIC (integer 1-5):
+  1 = Missing, empty, or completely uninformative
+  2 = Present but extremely vague (e.g., "This dataset contains data")
+  3 = Adequate — mentions the topic but lacks what, who, or when
+  4 = Good — clearly states what data is collected, by whom, and for what purpose
+  5 = Excellent — precise, complete, useful to a data consumer
 
-2. DESCRIPTION SUGGESTION:
-   Write an improved description (2-3 sentences) that:
-   - Clearly explains what data this dataset contains
-   - Mentions key fields or metrics
-   - Describes potential use cases or purpose
+Provide: Integer score (1-5) and 2-5 word feedback explaining the score.
 
-3. TAG RELEVANCE (score 1-5):
-   - 1 = No tags or completely irrelevant
-   - 2 = Generic or mostly irrelevant
-   - 3 = Somewhat relevant but could be better
-   - 4 = Relevant and useful
-   - 5 = Highly specific and relevant
+════════════════════════════════════════════════════════════════════════════════
+TASK 2: DESCRIPTION SUGGESTION
+════════════════════════════════════════════════════════════════════════════════
 
-   Provide a score and one-sentence feedback explaining your rating.
+You are a government data documentation specialist.
 
-4. TAG SUGGESTIONS:
-   Suggest 3-5 specific, relevant tags that would help users discover this dataset.
-   - Specific to the domain/topic
-   - Useful for search and filtering
-   - Not too generic (avoid tags like "data", "dataset")
+STRICT RULES:
+• Use ONLY facts present in the metadata provided
+• Do NOT invent statistics, dates, or coverage areas
+• If the available metadata is insufficient to write a meaningful description,
+  return exactly: "INSUFFICIENT_DATA"
 
-REQUIRED JSON RESPONSE FORMAT:
+Write a clear, factual 2-3 sentence description that:
+• Clearly explains what data this dataset contains
+• Mentions key fields or metrics (if known from columns/name)
+• Describes potential use cases or purpose (if inferrable from category/name)
+
+════════════════════════════════════════════════════════════════════════════════
+TASK 3: TAG RELEVANCE SCORE
+════════════════════════════════════════════════════════════════════════════════
+
+Evaluate how well the current tags match this dataset.
+
+SCORING GUIDELINES (integer 1-5):
+  1 = Tags are missing, generic, or mostly unrelated
+  2 = Tags are somewhat related but vague or weak
+  3 = Tags are broadly correct but not very specific
+  4 = Tags match the dataset well and are useful
+  5 = Tags are highly accurate, specific, and clearly aligned with the dataset
+
+STRICT RULES:
+• Judge only based on dataset name, description, and the provided tags
+• Do NOT assume extra context not written above
+• PENALIZE generic tags like "data", "government", or overly broad labels
+• REWARD tags that would help a user find this dataset
+
+Provide: Integer score (1-5) and one sentence feedback.
+
+════════════════════════════════════════════════════════════════════════════════
+TASK 4: TAG SUGGESTIONS
+════════════════════════════════════════════════════════════════════════════════
+
+Suggest 3-5 relevant tags for this dataset.
+
+TAG GUIDELINES - Only use tags that:
+• Describe what the dataset ACTUALLY CONTAINS (based on name, description, category)
+• Are specific, not generic (e.g., "vaccine-records" NOT "health")
+• Are based on explicit information given - do NOT invent topics
+• Use lowercase, single words or hyphenated phrases
+• Are relevant to people searching for similar datasets
+
+INVALID TAGS - DO NOT SUGGEST:
+• Generic terms: "data", "information", "government", "dataset"
+• Assumptions about content not mentioned
+• Tags that duplicate the category already provided
+• Made-up topics not in the name/description/category
+
+If insufficient info, return: ["INSUFFICIENT_DATA"]
+
+════════════════════════════════════════════════════════════════════════════════
+REQUIRED JSON RESPONSE FORMAT
+════════════════════════════════════════════════════════════════════════════════
+
 {{
   "description_score": <integer 1-5>,
-  "description_feedback": "<one sentence explaining the score>",
-  "description_suggestion": "<improved 2-3 sentence description>",
+  "description_feedback": "<2-5 words explaining the score>",
+  "description_suggestion": "<improved 2-3 sentence description OR 'INSUFFICIENT_DATA'>",
   "tag_score": <integer 1-5>,
   "tag_feedback": "<one sentence explaining the score>",
   "tag_suggestions": ["<tag1>", "<tag2>", "<tag3>", ...]
 }}
 
-IMPORTANT:
-- Respond ONLY with the JSON object, no additional text
-- Ensure all fields are present
-- Use double quotes for strings
-- tag_suggestions must be an array of 3-5 strings
-- Scores must be integers between 1 and 5
+CRITICAL REQUIREMENTS:
+• Respond ONLY with the JSON object, no preamble or explanation
+• Ensure all 6 fields are present
+• Use double quotes for strings
+• tag_suggestions must be an array of 3-5 strings
+• Scores must be integers between 1 and 5
+• Follow all STRICT RULES above to avoid hallucination
 """
 
     return prompt
@@ -672,6 +728,21 @@ def enrich_with_llm(dataset: Dict[str, Any]) -> Dict[str, Any]:
         # Validate tag_suggestions is a list
         if not isinstance(result['tag_suggestions'], list):
             logger.warning(f"tag_suggestions is not a list: {type(result['tag_suggestions'])}")
+            result['tag_suggestions'] = []
+
+        # Handle INSUFFICIENT_DATA and ERROR responses (from strict prompts)
+        # Convert INSUFFICIENT_DATA to None for description_suggestion
+        if result['description_suggestion'] == 'INSUFFICIENT_DATA':
+            logger.info(f"LLM returned INSUFFICIENT_DATA for description suggestion")
+            result['description_suggestion'] = None
+        # Convert ERROR: prefix responses to None
+        elif isinstance(result['description_suggestion'], str) and result['description_suggestion'].startswith('ERROR:'):
+            logger.warning(f"LLM returned error for description: {result['description_suggestion'][:100]}")
+            result['description_suggestion'] = None
+
+        # Convert ["INSUFFICIENT_DATA"] to empty list for tag_suggestions
+        if result['tag_suggestions'] == ['INSUFFICIENT_DATA']:
+            logger.info(f"LLM returned INSUFFICIENT_DATA for tag suggestions")
             result['tag_suggestions'] = []
 
         # Limit to 5 tags
