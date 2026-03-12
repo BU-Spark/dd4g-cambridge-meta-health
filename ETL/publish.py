@@ -1,83 +1,350 @@
 """
 Publish pipeline data to a HuggingFace dataset repository.
 
-Exports the contents of the SQLite database as a Parquet file and pushes
-it to a user-specified HuggingFace dataset.
+Exports a comprehensive joined dataset (ODP_datasets + latest evaluations)
+as a Parquet file and pushes it to a HuggingFace dataset repository.
+
+The exported dataset includes:
+- All dataset metadata from ODP_datasets
+- Latest evaluation scores and health metrics
+- LLM enrichment results (description/tag suggestions)
+- Static health flags and freshness scores
 
 Usage:
     python publish.py                       # uses environment variables
     HF_TOKEN and HF_REPO must be set (or edit the placeholders below)
 
-The script is intentionally minimal; it is safe to run repeatedly.
+The script is safe to run repeatedly and handles missing evaluations gracefully.
 """
 
 import os
 import sqlite3
 import pandas as pd
+import logging
+from datetime import datetime
 
-# optional huggingface_hub import; library must be installed in the environment
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Optional huggingface_hub import; library must be installed in the environment
 try:
     from huggingface_hub import HfApi
 except ImportError:  # pragma: no cover
     HfApi = None
 
-# --- configuration (override with env or edit directly) ---
+# ────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ────────────────────────────────────────────────────────────
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "cambridge_metadata.db")
-EXPORT_PATH = os.path.join(os.path.dirname(__file__), "data", "cambridge_metadata.parquet")
+EXPORT_PATH = os.path.join(os.path.dirname(__file__), "data", "cambridge_odp_health.parquet")
 
-# fill these via environment or hardcode for your repo
+# Fill these via environment or hardcode for your repo
 HF_TOKEN = os.getenv("HF_TOKEN", "")
-HF_REPO = os.getenv("HF_REPO", "username/dataset-name")  # e.g. "user/cambridge-odp"
+HF_REPO = os.getenv("HF_REPO", "spark-dd4g/odp-metadata-health")
 
-# ---------------------------------------------------------------------------
+# ────────────────────────────────────────────────────────────
+# EXPORT FUNCTIONS
+# ────────────────────────────────────────────────────────────
 
-def export_to_parquet(db_path: str, output_path: str) -> None:
-    """Read the database and write the ODP_datasets table to a parquet file."""
+def export_to_parquet(db_path: str, output_path: str) -> int:
+    """
+    Export joined dataset (datasets + latest evaluations) to Parquet file.
+
+    Creates a comprehensive dataset with all metadata and evaluation results,
+    joining each dataset with its most recent evaluation.
+
+    Args:
+        db_path: Path to SQLite database
+        output_path: Path for output Parquet file
+
+    Returns:
+        Number of rows exported
+
+    Raises:
+        FileNotFoundError: If database doesn't exist
+        sqlite3.Error: If database query fails
+    """
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Database not found: {db_path}")
 
+    logger.info(f"Connecting to database: {db_path}")
     conn = sqlite3.connect(db_path)
-    df = pd.read_sql_query("SELECT * FROM ODP_datasets", conn)
-    conn.close()
+    cursor = conn.cursor()
 
-    df.to_parquet(output_path, index=False)
-    print(f"Exported {len(df)} rows to {output_path}")
+    try:
+        # Check if evaluations table exists
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='evaluations'
+        """)
+        evaluations_exists = cursor.fetchone() is not None
+
+        if evaluations_exists:
+            logger.info("Evaluations table found - creating joined dataset")
+
+            # Comprehensive join query with all important fields
+            query = """
+            SELECT
+                -- Dataset identification
+                d.dataset_id,
+                d.title,
+                d.description,
+                d.category,
+                d.department,
+
+                -- Dataset metadata
+                d.license,
+                d.contact_email,
+                d.permalink,
+                d.domain,
+
+                -- Timestamps
+                d.update_frequency,
+                d.data_updated_at,
+                d.updated_at,
+                d.created_at,
+
+                -- Usage metrics
+                d.page_views_total,
+                d.page_views_last_month,
+                d.download_count,
+
+                -- Tags and columns
+                d.tags,
+                d.columns_names,
+
+                -- Pipeline state
+                d.last_evaluated_at,
+
+                -- Overall health assessment
+                e.overall_health_label,
+                e.overall_health_score,
+                e.freshness_score,
+
+                -- LLM description evaluation
+                e.description_score,
+                e.description_feedback,
+                e.description_suggestion,
+
+                -- LLM tag evaluation
+                e.tag_score,
+                e.tag_feedback,
+                e.tag_suggestion,
+
+                -- Static health flags
+                e.description_exists,
+                e.tags_count_score,
+                e.license_exists,
+                e.department_exists,
+                e.category_exists,
+                e.days_overdue,
+
+                -- Evaluation metadata
+                e.evaluated_at,
+                e.scored_at
+
+            FROM ODP_datasets d
+            LEFT JOIN (
+                SELECT dataset_id, MAX(id) as latest_id
+                FROM evaluations
+                GROUP BY dataset_id
+            ) latest ON d.dataset_id = latest.dataset_id
+            LEFT JOIN evaluations e ON latest.latest_id = e.id
+            ORDER BY d.title
+            """
+
+        else:
+            logger.warning("Evaluations table not found - exporting datasets only")
+
+            # Fallback: export just datasets if evaluations don't exist yet
+            query = """
+            SELECT
+                dataset_id,
+                title,
+                description,
+                category,
+                department,
+                license,
+                contact_email,
+                permalink,
+                domain,
+                update_frequency,
+                data_updated_at,
+                updated_at,
+                created_at,
+                page_views_total,
+                page_views_last_month,
+                download_count,
+                tags,
+                columns_names,
+                last_evaluated_at
+            FROM ODP_datasets
+            ORDER BY title
+            """
+
+        # Execute query and load into DataFrame
+        logger.info("Executing export query...")
+        df = pd.read_sql_query(query, conn)
+
+        # Log dataset statistics
+        logger.info(f"Loaded {len(df)} datasets")
+        if evaluations_exists:
+            evaluated_count = df['last_evaluated_at'].notna().sum()
+            logger.info(f"  {evaluated_count} datasets with evaluations")
+            logger.info(f"  {len(df) - evaluated_count} datasets not yet evaluated")
+
+        # Export to Parquet
+        logger.info(f"Writing to Parquet: {output_path}")
+        df.to_parquet(output_path, index=False)
+
+        file_size_kb = os.path.getsize(output_path) / 1024
+        logger.info(f"Export complete: {len(df)} rows, {file_size_kb:.2f} KB")
+
+        return len(df)
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error during export: {e}")
+        raise
+
+    finally:
+        conn.close()
 
 
 def publish_to_hf(export_path: str, repo: str, token: str) -> None:
-    """Push the parquet file to the specified HuggingFace dataset repo."""
+    """
+    Push the Parquet file to the specified HuggingFace dataset repo.
+
+    Args:
+        export_path: Path to the Parquet file to upload
+        repo: HuggingFace dataset repository ID (e.g., "username/dataset-name")
+        token: HuggingFace API token for authentication
+
+    Raises:
+        ImportError: If huggingface_hub is not installed
+        ValueError: If token is not provided
+        Exception: If upload fails
+    """
     if HfApi is None:
-        raise ImportError("huggingface_hub is not installed; install with `pip install huggingface-hub`")
+        raise ImportError(
+            "huggingface_hub is not installed. "
+            "Install with: pip install huggingface-hub"
+        )
 
     if not token:
-        raise ValueError("HF_TOKEN is not set; cannot authenticate")
+        raise ValueError("HF_TOKEN is not set; cannot authenticate to HuggingFace")
 
-    api = HfApi()
+    if not os.path.exists(export_path):
+        raise FileNotFoundError(f"Export file not found: {export_path}")
 
-    # create repository if it doesn't exist (harmless if it does)
+    logger.info("=" * 60)
+    logger.info("Publishing to HuggingFace")
+    logger.info("=" * 60)
+
     try:
-        api.create_repo(repo_id=repo, repo_type="dataset", token=token, exist_ok=True)
-        print(f"Ensured dataset repo exists: {repo}")
-    except Exception as e:  # pragma: no cover
-        print(f"Warning: could not create/check repo {repo}: {e}")
+        api = HfApi()
 
-    # upload file
-    api.upload_file(
-        path_or_fileobj=export_path,
-        path_in_repo=os.path.basename(export_path),
-        repo_id=repo,
-        repo_type="dataset",
-        token=token,
-        create_pr= False
-    )
-    print(f"Published {export_path} to HuggingFace dataset {repo}")
+        # Create repository if it doesn't exist (harmless if it does)
+        logger.info(f"Ensuring dataset repository exists: {repo}")
+        try:
+            api.create_repo(
+                repo_id=repo,
+                repo_type="dataset",
+                token=token,
+                exist_ok=True
+            )
+            logger.info(f"✓ Repository ready: {repo}")
+        except Exception as e:
+            logger.warning(f"Could not create/check repo {repo}: {e}")
+            logger.warning("Attempting upload anyway...")
+
+        # Upload file
+        file_size_mb = os.path.getsize(export_path) / (1024 * 1024)
+        logger.info(f"Uploading {os.path.basename(export_path)} ({file_size_mb:.2f} MB)...")
+
+        api.upload_file(
+            path_or_fileobj=export_path,
+            path_in_repo=os.path.basename(export_path),
+            repo_id=repo,
+            repo_type="dataset",
+            token=token,
+            create_pr=False
+        )
+
+        logger.info(f"✓ Published to HuggingFace: https://huggingface.co/datasets/{repo}")
+        logger.info("=" * 60)
+
+    except Exception as e:
+        logger.error(f"Failed to publish to HuggingFace: {e}")
+        raise
+
+
+# ────────────────────────────────────────────────────────────
+# MAIN EXECUTION
+# ────────────────────────────────────────────────────────────
+
+def main():
+    """
+    Main publish execution.
+
+    Steps:
+    1. Export joined dataset to Parquet file
+    2. Publish to HuggingFace (if credentials provided)
+    """
+    logger.info("=" * 60)
+    logger.info("CAMBRIDGE ODP - PUBLISH STEP")
+    logger.info("=" * 60)
+    logger.info(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("")
+
+    try:
+        # Step 1: Export to Parquet
+        logger.info("Step 1: Exporting dataset to Parquet")
+        logger.info("-" * 60)
+        row_count = export_to_parquet(DB_PATH, EXPORT_PATH)
+        logger.info("")
+
+        # Step 2: Publish to HuggingFace (if credentials available)
+        if HF_TOKEN and HF_REPO:
+            logger.info("Step 2: Publishing to HuggingFace")
+            logger.info("-" * 60)
+            publish_to_hf(EXPORT_PATH, HF_REPO, HF_TOKEN)
+        else:
+            logger.warning("Step 2: Skipping HuggingFace upload")
+            logger.warning("  HF_TOKEN or HF_REPO not configured")
+            logger.warning("  Set these environment variables to enable publishing")
+            logger.info("")
+
+        # Summary
+        logger.info("=" * 60)
+        logger.info("PUBLISH COMPLETE")
+        logger.info("=" * 60)
+        logger.info(f"Datasets exported: {row_count}")
+        logger.info(f"Output file: {EXPORT_PATH}")
+        if HF_TOKEN and HF_REPO:
+            logger.info(f"HuggingFace repo: {HF_REPO}")
+        logger.info("=" * 60)
+
+        return True
+
+    except FileNotFoundError as e:
+        logger.error(f"File not found: {e}")
+        return False
+    except ImportError as e:
+        logger.error(f"Missing dependency: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Publish failed: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return False
 
 
 if __name__ == "__main__":
-    print("Starting publish step...")
-    export_to_parquet(DB_PATH, EXPORT_PATH)
-    # only attempt publish if HF_TOKEN is provided
-    if HF_TOKEN and HF_REPO:
-        publish_to_hf(EXPORT_PATH, HF_REPO, HF_TOKEN)
-    else:
-        print("HF_TOKEN or HF_REPO not configured; skipping upload.")
+    import sys
+    success = main()
+    sys.exit(0 if success else 1)

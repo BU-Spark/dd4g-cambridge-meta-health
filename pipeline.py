@@ -32,7 +32,7 @@ def log_run(run_id, started_at, fetched, scored, enriched, status):
 
 
 if __name__ == "__main__":
-    from fetch_data import fetch_from_socrata, save_to_db
+    from EDA.fetch_data import fetch_from_socrata, save_to_db
     from score_and_flag import score_datasets
     from llm_enrich import run_llm_enrichment
 
