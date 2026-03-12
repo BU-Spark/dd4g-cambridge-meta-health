@@ -39,7 +39,7 @@ Before starting, ensure you have:
 
 - **Python 3.9+** (tested with 3.13)
 - **Git** for version control
-- **Google Gemini API Key** (for AI enrichment) — [Get one here](https://makersuite.google.com/app/apikey)
+- **HuggingFace API Token** (for LLM inference) — [Get one here](https://huggingface.co/settings/tokens)
 - **Internet connection** (for Socrata API, HuggingFace models)
 - **~2GB disk space** (for database and models)
 
@@ -106,9 +106,9 @@ nano .env  # Or use your preferred editor
 **Required variables:**
 
 ```env
-# Google Gemini API Key - Required for AI description/tag generation
-# Get from: https://makersuite.google.com/app/apikey
-GEMINI_API_KEY=your_actual_api_key_here
+# HuggingFace API Token - Required for LLM inference (Meta-Llama-3-8B)
+# Get from: https://huggingface.co/settings/tokens
+HF_TOKEN=your_actual_token_here
 
 # Base directory for data storage (use absolute path)
 # This is where cambridge_metadata.db will be created
@@ -117,13 +117,13 @@ BASE_DIR=/path/to/your/base/directory
 
 **Example (macOS/Linux):**
 ```env
-GEMINI_API_KEY=AIzaSyDk...your_key...
+HF_TOKEN=hf_AbCdEfGhIjKlMnOpQrStUvWx...
 BASE_DIR=/Users/yourname/cambridge-data
 ```
 
 **Example (Windows):**
 ```env
-GEMINI_API_KEY=AIzaSyDk...your_key...
+HF_TOKEN=hf_AbCdEfGhIjKlMnOpQrStUvWx...
 BASE_DIR=C:\Users\yourname\cambridge-data
 ```
 
@@ -175,8 +175,8 @@ python scoring_llm/llm_enrich.py
 **Error: "ModuleNotFoundError"**
 - Ensure you activated the virtual environment: `source venv/bin/activate`
 
-**Error: "GEMINI_API_KEY not found"**
-- Verify `.env` file exists and has correct key
+**Error: "HF_TOKEN not found"**
+- Verify `.env` file exists and has correct HuggingFace token
 - Restart the terminal after editing `.env`
 
 **Error: "Connection refused" / API timeout**
@@ -250,91 +250,134 @@ Network URL: http://192.168.x.x:8501
 
 ## Data Pipeline Explained
 
-### Architecture
+### Pipeline Architecture
+
+The system implements a 4-stage data processing pipeline with clear separation of concerns:
 
 ```
-Cambridge Open Data Portal
+Cambridge Open Data Portal (Data Source)
            ↓
-    [Step 1] fetch_data.py
+    [Stage 1] Data Ingestion Layer (fetch_data.py)
            ↓
-    Datasets table (SQLite)
+    Datasets Table (Raw Data)
            ↓
-    [Step 2] score_and_flag.py
+    [Stage 2] Processing & Scoring Layer (score_and_flag.py)
            ↓
-    Health flags table (scoring metrics)
+    Health Flags Table (Transformed Data)
            ↓
-    [Step 3] llm_enrich.py
+    [Stage 3] AI Enrichment Layer (llm_enrich.py)
            ↓
-    LLM results table (AI suggestions)
+    LLM Results Table (AI-Generated Data)
            ↓
-    Streamlit Dashboard
+    [Stage 4] User Interface & Review Layer (Streamlit)
            ↓
-    [Step 4] Human Review (manual approval)
-           ↓
-    Human Approvals table (final decisions)
+    Human Approvals Table (Final Output)
            ↓
     CSV Export / Reporting
 ```
 
-### Step 1: Data Fetching (fetch_data.py)
+**Pipeline Orchestration:**
+The `pipeline.py` script orchestrates all three stages (ingestion, processing, enrichment) in sequence, managing dependencies and error handling across the entire data workflow.
+
+### Step 1: Data Ingestion (fetch_data.py)
+
+**Technical Purpose:**
+This stage implements the ingestion layer of the data pipeline, responsible for extracting raw metadata from the source system.
 
 **What it does:**
-- Connects to Socrata Open Data API for Cambridge
-- Fetches all datasets with metadata (name, description, tags, etc.)
-- Stores in `datasets` table
+- Connects to Cambridge's Socrata API (the data source)
+- Implements paginated requests with exponential backoff retry logic to handle transient failures
+- Parses JSON responses and normalizes data structure
+- Writes records to the `datasets` table in SQLite
 
-**Key fields fetched:**
-- `id`, `name`, `description`, `category`, `department`
-- `license`, `tags`, `createdAt`, `updatedAt`, `dataUpdatedAt`, `updateFrequency`
+**Key data fields ingested:**
+- Identifiers: `id`, `name`
+- Metadata: `description`, `category`, `department`, `license`, `tags`
+- Timestamps: `createdAt`, `updatedAt`, `dataUpdatedAt`, `updateFrequency`
 
-**Retry logic:**
-- Automatic retries on transient failures
-- Respects API rate limits
-- Logs all failures for debugging
+**Error Handling:**
+- Respects API rate limits (5,000 calls/hour) with intelligent backoff
+- Logs all failures with timestamp and error context for debugging
+- Supports resume capability if the ingestion is interrupted
 
-### Step 2: Health Scoring (score_and_flag.py)
+**Performance:** Typically 2-5 minutes for 250+ datasets
+
+### Step 2: Quality Assessment & Scoring (score_and_flag.py)
+
+**Technical Purpose:**
+This processing stage transforms raw metadata into quality metrics using a weighted multi-dimensional scoring algorithm.
 
 **What it does:**
-- Evaluates 6 dimensions of metadata quality
-- Weights each dimension (see Scoring Rubric)
-- Assigns health band (Critical/Poor/Fair/Good)
-- Flags datasets that need attention
+- Iterates through all ingested datasets and applies a 6-dimensional scoring model
+- Calculates dimension-specific scores based on predefined rules and thresholds
+- Aggregates scores using weighted formula (see Scoring Rubric)
+- Assigns health bands based on score ranges (Critical/Poor/Fair/Good)
+- Flags datasets meeting specific quality thresholds for downstream processing
 
-**Scoring dimensions:**
-1. Description (25%) — Presence & quality
-2. Tags (15%) — Count and relevance
-3. License (15%) — Is license documented?
-4. Department (10%) — Is department assigned?
-5. Category (10%) — Is category assigned?
-6. Freshness (25%) — How current is the data?
+**Why this architecture matters:**
+- Transparent, rule-based scoring (not a black box)
+- Consistent evaluation across all 250+ datasets
+- Weights can be easily adjusted for different policy priorities
+- Flagging system identifies candidates for AI enrichment
+
+**Output Storage:**
+Results written to `health_flags` table with:
+- Overall `health_score` (0-100) and `health_band` classification
+- Dimension-specific scores for breakdown analysis
+- Quality flags (missing description, missing license, stale data, etc.)
+- Metadata like days overdue for freshness calculations
+
+**Performance:** ~30 seconds for full dataset processing
 
 ### Step 3: AI Enrichment (llm_enrich.py)
 
-**What it does:**
-- Uses Meta-Llama-3-8B model (via HuggingFace)
-- Generates improved descriptions
-- Suggests relevant tags
-- Provides AI feedback/explanations
-
-**Important:**
-- Only processes datasets with `llm_status = "pending_review"`
-- Uses Google Gemini API for embeddings & initial analysis
-- Saves suggestions to `llm_results` table
-- Does NOT modify the original dataset
-
-### Step 4: Human Review (Streamlit)
+**Technical Purpose:**
+This stage uses a large language model (LLM) to generate AI-powered suggestions for improving metadata, implementing the enrichment layer of the pipeline.
 
 **What it does:**
-- Presents AI suggestions to human reviewers
-- Allows editing before approval
-- Saves approval decisions to `human_approvals` table
-- Updates `llm_status` to reflect human decisions
+- Filters datasets with `llm_status = "pending_review"` (datasets flagged by scoring stage)
+- Sends dataset metadata to HuggingFace's Meta-Llama-3-8B model for inference
+- Generates improved descriptions using LLM-based text generation
+- Suggests relevant tags using semantic understanding and embeddings
+- Provides explanatory feedback on why improvements were suggested
 
-**Approval statuses:**
-- `approved` — Used AI suggestion as-is
-- `edited` — Used AI suggestion but edited it
-- `rejected` — Rejected AI suggestion entirely
-- `pending_review` — Waiting for human review
+**Architecture Details:**
+- Uses HuggingFace Inference API (serverless LLM inference)
+- Implements async request handling for efficiency
+- Caches model responses to avoid redundant API calls
+- Writes suggestions to `llm_results` table with metadata
+
+**Important Constraints:**
+- Read-only operation: Does NOT modify source datasets
+- Results are suggestions only: require human approval before application
+- Selective processing: only handles pending datasets (avoids redundant inference)
+- Status tracking: records `llm_status` for approval workflow state management
+
+**Performance:** 1-2 hours for 250 datasets (awaiting LLM inference service)
+
+### Step 4: Human Review Interface (Streamlit Application)
+
+**Technical Purpose:**
+Implements the final stage: human-in-the-loop approval workflow with complete audit trail logging.
+
+**What it does:**
+- Presents AI suggestions through an interactive web interface
+- Accepts human review decisions: approve, edit-then-approve, or reject
+- Implements optimistic concurrency control (PRIMARY KEY constraint prevents duplicates)
+- Records all decisions with metadata to `human_approvals` table for audit trail
+- Updates `llm_status` in upstream tables to reflect approval state
+
+**Approval State Management:**
+Possible statuses:
+- `pending_review` — Awaiting human review (initial state)
+- `approved` — Suggestion accepted as-is
+- `edited` — Suggestion accepted after human modification
+- `rejected` — Suggestion not used
+
+**Audit & Accountability:**
+- Full record of reviewer name, timestamp, and any notes
+- Complete history enables performance tracking and decision reversal if needed
+- State transitions trigger upstream updates for consistency
 
 ---
 

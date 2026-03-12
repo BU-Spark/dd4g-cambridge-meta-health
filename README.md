@@ -21,47 +21,51 @@
 
 ## Key Features
 
-- **Automated Quality Scoring** — 6-dimension metadata audit with weighted scoring (0-100)
-- **AI-Powered Enrichment** — Meta-Llama-3-8B generates improved descriptions and tags
-- **Human Review Workflow** — Interactive dashboard for approving, editing, or rejecting AI suggestions
-- **Interactive Analytics** — 6 specialized tabs for overview, action queue, AI review, spreadsheet view, and trends
-- **Freshness Monitoring** — Dynamic staleness detection based on each dataset's update frequency
-- **Real-time Filtering** — Sidebar filters by department, category, health band, and more
-- **CSV Export** — Download full health report for offline analysis
+- **Automated Quality Scoring Engine** — 6-dimension multi-weighted algorithm producing standardized 0-100 health scores
+- **AI-Powered Enrichment Pipeline** — Meta-Llama-3-8B LLM inference generating improved descriptions and semantic tag suggestions
+- **Human-in-the-Loop Approval Workflow** — Interactive interface for approving, editing, or rejecting AI suggestions with full audit trail
+- **Interactive Analytics Dashboard** — 6 specialized Streamlit tabs with real-time filtering, aggregation, and visualization
+- **Dynamic Freshness Detection** — Intelligent staleness calculation based on dataset-specific update frequencies
+- **Real-time Query Filtering** — Multi-dimensional filtering by department, category, health band, and custom searches
+- **Structured Data Export** — CSV export with all computed metrics and approval status
 
-### Project Components
+### Project Components (Pipeline Modules)
 
-* **`pipeline.py`** — Master orchestrator
-  - Runs all 3 steps in sequence: fetch → score → enrich
-  - Single command to update entire system
+* **`pipeline.py`** — Master orchestrator for the data processing pipeline
+  - Manages sequential execution of ingestion → scoring → enrichment stages
+  - Handles error recovery and state management across stages
+  - Single entry point for reproducible pipeline runs
   
-* **`fetch_data.py`** — Socrata API integration
-  - Fetches all datasets from Cambridge Open Data Portal
-  - Includes retry logic for transient failures
-  - Stores metadata in SQLite database
+* **`fetch_data.py`** — Data ingestion layer with API client
+  - Implements Socrata API client with paginated requests
+  - Includes exponential backoff retry logic for transient failures
+  - Normalizes and persists raw metadata to SQLite
   
-* **`scoring_llm/score_and_flag.py`** — 6-dimension scoring engine
-  - Evaluates: description, tags, license, department, category, freshness
-  - Assigns health bands (Critical/Poor/Fair/Good)
-  - Runs ~30 seconds for entire dataset
+* **`scoring_llm/score_and_flag.py`** — Multi-dimensional quality scoring engine
+  - Applies 6-dimension weighted algorithm to assess metadata quality
+  - Computes health_band classifications (Critical/Poor/Fair/Good)
+  - Flags datasets for prioritization and downstream processing
+  - Runtime: ~30 seconds for 250+ datasets
 
-* **`scoring_llm/llm_enrich.py`** — AI-powered description/tag generation
-  - Uses Meta-Llama-3-8B via HuggingFace Inference API
-  - Generates improved descriptions with feedback
-  - Suggests relevant tags using embeddings
-  - Processes only pending datasets
+* **`scoring_llm/llm_enrich.py`** — AI enrichment layer using LLM inference
+  - Calls HuggingFace Inference API for Meta-Llama-3-8B model
+  - Generates improved descriptions and semantically-relevant tags
+  - Implements selective processing (only pending_review datasets)
+  - Records suggestions with metadata for human review
+  - Runtime: 1-2 hours for 250+ datasets (LLM inference I/O bound)
 
-* **`streamlit/app.py`** — Interactive dashboard (6 tabs)
-  - Overview: Summary metrics and band distribution
-  - Action Queue: Sorted by health score (worst first)
-  - AI Descriptions: Review & approve descriptions with editing
-  - AI Tags: Review & approve AI-generated tags
-  - Spreadsheet: Full data table with all metrics & CSV export
-  - Trends: Historical analysis and metrics visualization
+* **`streamlit/app.py`** — Interactive web dashboard with 6 analytical views
+  - **Overview**: Aggregated metrics, health band distribution, trend indicators
+  - **Action Queue**: Sortable dataset list prioritized by health scores
+  - **AI Descriptions**: Side-by-side comparison with edit & approval interface
+  - **AI Tags**: Tag suggestion review with approve/reject workflow
+  - **Spreadsheet View**: Full data table with multi-dimensional filtering and CSV export
+  - **Trends**: Historical analytics, distribution charts, and performance metrics
 
-* **`deploy/push_db.py`** — Database sync for deployment
-  - Pushes updated database to HuggingFace for cloud hosting
-  - Triggered automatically via GitHub Actions
+* **`deploy/push_db.py`** — Database synchronization for cloud deployment
+  - Uploads processed database to HuggingFace Hub
+  - Triggered via GitHub Actions for continuous deployment
+  - Enables public-facing dashboards on HuggingFace Spaces
 
 ## How To Use
 
@@ -81,7 +85,7 @@ pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
-# Edit .env and add your Google Gemini API key
+# Edit .env and add your HuggingFace API token
 
 # Run full pipeline
 python pipeline.py
@@ -155,64 +159,80 @@ The system combines:
 
 ## Architecture
 
-### Data Pipeline
+### Pipeline Architecture & Data Flow
+
+The system implements a **4-stage ETL (Extract-Transform-Load) pipeline** with clear separation of concerns and a human-in-the-loop approval stage:
 
 ```
-Cambridge Open Data Portal
-         ↓
-   [Step 1] fetch_data.py
-         ↓
-   Datasets Table (251 datasets)
-         ↓
-   [Step 2] score_and_flag.py
-         ↓
-   Health Flags Table (6 scores per dataset)
-         ↓
-   [Step 3] llm_enrich.py
-         ↓
-   LLM Results Table (AI suggestions)
-         ↓
-   Streamlit Dashboard (6 tabs)
-         ↓
-   [Step 4] Human Review (click approve/reject)
-         ↓
-   Human Approvals Table (audit trail)
-         ↓
-   CSV Export / Reports
+Data Source Layer
+    Cambridge Open Data Portal (Socrata API)
+              ↓
+Ingestion Layer
+    [Stage 1] fetch_data.py — Data extraction & normalization
+              ↓
+         datasets table (raw ingested data)
+              ↓
+Processing Layer
+    [Stage 2] score_and_flag.py — Quality assessment & transformation
+              ↓
+         health_flags table (processed metrics)
+              ↓
+Enrichment Layer
+    [Stage 3] llm_enrich.py — AI-powered metadata generation
+              ↓
+         llm_results table (generated suggestions)
+              ↓
+Presentation & Approval Layer
+    [Stage 4] Streamlit UI — Interactive review workflow
+              ↓
+         human_approvals table (final decisions with audit trail)
+              ↓
+Output Layer
+         CSV/JSON exports & reporting
 ```
 
-### Database Schema
+**Pipeline Orchestration:** The `pipeline.py` script manages the orchestration of stages 1-3, handling dependencies, error recovery, and state management across the entire workflow.
 
-**`datasets`** — Raw metadata from Socrata API
-- id, name, description, category, department
-- license, tags, createdAt, updatedAt, dataUpdatedAt, updateFrequency
+### Database Schema (Data Model)
 
-**`health_flags`** — Scoring metrics per dataset
-- dataset_id, health_score, health_band (0-100)
-- llm_desc_score, llm_desc_feedback, llm_suggested_desc
-- missing_description, missing_tags, missing_license (0/1)
-- missing_department, missing_category, is_stale (0/1)
-- days_overdue
+The system uses SQLite with the following key tables:
 
-**`llm_results`** — AI suggestions and metadata
-- dataset_id, llm_suggested_desc, llm_suggested_tags
-- llm_status (pending_review, approved, edited, rejected)
-- llm_generated_at
+**`datasets`** — Raw ingested data from source system
+- Fields: id, name, description, category, department, license, tags
+- Timestamps: createdAt, updatedAt, dataUpdatedAt, updateFrequency
+- Purpose: Single source of truth for raw metadata
 
-**`human_approvals`** — Review audit trail
-- dataset_id, approved_description, approved_tags
-- human_status (approved, edited, rejected)
-- reviewed_by, reviewed_at, edit_note
+**`health_flags`** — Processed quality metrics (output of scoring stage)
+- Scores: health_score (0-100), health_band, dimension-specific scores
+- Flags: missing_description, missing_tags, missing_license (boolean)
+- Metadata: llm_desc_score, llm_desc_feedback, days_overdue
+- Purpose: Quality assessment data for filtering and prioritization
 
-**`pipeline_runs`** — Execution log
-- run_id, run_timestamp, step (fetch/score/enrich)
-- status (success/failure), execution_time, error_message
+**`llm_results`** — AI-generated suggestions (output of enrichment stage)
+- Suggestions: llm_suggested_desc, llm_suggested_tags
+- Status: llm_status (pending_review, approved, edited, rejected)
+- Metadata: llm_generated_at, llm_feedback
+- Purpose: Store AI-generated improvement suggestions awaiting approval
+
+**`human_approvals`** — Audit trail of human decisions (approval workflow output)
+- Decisions: human_status (approved, edited, rejected)
+- Approved content: approved_description, approved_tags
+- Audit metadata: reviewed_by, reviewed_at, edit_note
+- Constraints: PRIMARY KEY on dataset_id (prevents duplicate approvals)
+- Purpose: Complete accountability log of all review decisions
+
+**`pipeline_runs`** — Execution metadata and logging
+- Tracking: run_id, run_timestamp, step (fetch/score/enrich)
+- Status: success/failure, execution_time_in_seconds, error_message
+- Purpose: Monitor pipeline health and debug failures
 
 ---
 
 ## Scoring Rubric
 
-The health score is a **weighted combination of 6 dimensions**:
+### Scoring Methodology
+
+The health score uses a **multi-weighted algorithm** combining 6 dimensions into a single 0-100 score:
 
 ```
 Health Score = (25% × Description) + (15% × Tags) + (15% × License) 
@@ -327,7 +347,7 @@ LIMIT=10 python pipeline.py
 
 See `.env.example` for complete list:
 ```env
-GEMINI_API_KEY=your_api_key_here      # Required for LLM enrichment
+HF_TOKEN=your_huggingface_token       # Required for LLM inference
 BASE_DIR=/path/to/base/directory      # Optional: data location
 ```
 
