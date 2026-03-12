@@ -45,10 +45,22 @@ def _rename_columns(df: pd.DataFrame) -> pd.DataFrame:
         'description_feedback': 'llm_desc_feedback',
         'description_suggestion': 'llm_suggested_desc',
         'tag_suggestion': 'llm_suggested_tags',
-        'tag_feedback': 'llm_tag_alignment_note',
-        'tags_count_score': 'tag_score'
+        'tag_feedback': 'llm_tag_alignment_note'
     }
-    return df.rename(columns=rename_map)
+
+    # Only rename columns that exist and won't create duplicates
+    safe_rename = {}
+    for old_name, new_name in rename_map.items():
+        if old_name in df.columns and new_name not in df.columns:
+            safe_rename[old_name] = new_name
+
+    df = df.rename(columns=safe_rename)
+
+    # Handle tag_score specially: use tags_count_score if tag_score doesn't exist
+    if 'tag_score' not in df.columns and 'tags_count_score' in df.columns:
+        df['tag_score'] = df['tags_count_score']
+
+    return df
 
 
 def _scale_scores(df: pd.DataFrame) -> pd.DataFrame:
