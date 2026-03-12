@@ -22,6 +22,14 @@ import sqlite3
 import pandas as pd
 import logging
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load .env file from project root
+# publish.py location: dd4g-cambridge-meta-health/ETL/publish.py
+# .env location: dd4g-cambridge-meta-health/.env
+project_root = os.path.dirname(os.path.dirname(__file__))
+dotenv_path = os.path.join(project_root, '.env')
+load_dotenv(dotenv_path)
 
 # Configure logging
 logging.basicConfig(
@@ -46,6 +54,13 @@ EXPORT_PATH = os.path.join(os.path.dirname(__file__), "data", "cambridge_odp_hea
 # Fill these via environment or hardcode for your repo
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 HF_REPO = os.getenv("HF_REPO", "spark-dd4g/odp-metadata-health")
+
+# Debug: Log configuration status (without exposing full token)
+if HF_TOKEN:
+    logger.debug(f"HF_TOKEN loaded (length: {len(HF_TOKEN)} chars)")
+else:
+    logger.debug("HF_TOKEN not set in .env file")
+logger.debug(f"HF_REPO: {HF_REPO}")
 
 # ────────────────────────────────────────────────────────────
 # EXPORT FUNCTIONS

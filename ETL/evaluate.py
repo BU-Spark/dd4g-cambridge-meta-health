@@ -232,6 +232,7 @@ def save_evaluation(dataset_id: str, evaluation_result: Dict[str, Any]) -> None:
         ))
 
         # Update last_evaluated_at timestamp in ODP_datasets
+        # Note: We only reach this point if LLM enrichment succeeded (atomic operation)
         cursor.execute("""
             UPDATE ODP_datasets
             SET last_evaluated_at = ?
@@ -798,19 +799,21 @@ def evaluate_dataset(dataset: Dict[str, Any]) -> Dict[str, Any]:
     static_scores = calculate_component_scores(dataset)
 
     # STEP 2: LLM enrichment (llm_enrich.py logic)
+    # IMPORTANT: This is atomic - if LLM fails, the entire evaluation is aborted
     logger.debug(f"Running LLM enrichment for {dataset_id}...")
-    try:
-        llm_scores = enrich_with_llm(dataset)
-    except Exception as e:
-        logger.warning(f"LLM enrichment failed for {dataset_id}: {e}")
-        llm_scores = {
-            'description_score': None,
-            'description_feedback': None,
-            'description_suggestion': None,
-            'tag_score': None,
-            'tag_feedback': None,
-            'tag_suggestion': None
-        }
+    llm_scores = enrich_with_llm(dataset)
+
+    # Check if LLM enrichment actually succeeded (not all NULL values)
+    llm_succeeded = (
+        llm_scores['description_score'] is not None or
+        llm_scores['tag_score'] is not None
+    )
+
+    if not llm_succeeded:
+        raise RuntimeError(
+            f"LLM enrichment failed for {dataset_id} - both description_score and tag_score are NULL. "
+            "Aborting evaluation (atomic operation - all or nothing)."
+        )
 
     # STEP 3: Map to README schema
     evaluation = {
