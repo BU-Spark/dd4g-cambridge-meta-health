@@ -54,8 +54,11 @@ def _rename_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _scale_scores(df: pd.DataFrame) -> pd.DataFrame:
     """Scale scores from 0.0-1.0 range to 0-100 range."""
     if 'health_score' in df.columns:
+        # Handle None/NaN values - convert to numeric first
+        df['health_score'] = pd.to_numeric(df['health_score'], errors='coerce')
         df['health_score'] = (df['health_score'] * 100).round(1)
     if 'freshness_score' in df.columns:
+        df['freshness_score'] = pd.to_numeric(df['freshness_score'], errors='coerce')
         df['freshness_score'] = (df['freshness_score'] * 100).round(1)
     return df
 
@@ -155,7 +158,7 @@ def load_data() -> pd.DataFrame:
         Transformed DataFrame matching the expected schema for the app
     """
     try:
-        # Step 1: Load Parquet from HuggingFace
+        # Step 1: Load Parquet from HuggingFace (public dataset)
         dataset = load_dataset(
             "spark-dd4g/odp-metadata-health",
             split="train",
@@ -163,8 +166,13 @@ def load_data() -> pd.DataFrame:
         )
         df = dataset.to_pandas()
 
+        # Debug: Print available columns
+        print(f"Loaded {len(df)} rows")
+        print(f"Available columns: {df.columns.tolist()}")
+
         # Step 2: Column Renames
         df = _rename_columns(df)
+        print(f"Columns after rename: {df.columns.tolist()}")
 
         # Step 3: Scale Numeric Fields
         df = _scale_scores(df)
@@ -172,10 +180,30 @@ def load_data() -> pd.DataFrame:
         # Step 4: Calculate Missing Fields
         df = _calculate_derived_fields(df)
 
+        # Step 5: Ensure numeric columns are proper numeric types (only if they exist)
+        numeric_cols = ['health_score', 'freshness_score', 'llm_desc_score',
+                       'tag_score', 'desc_score', 'license_score', 'days_overdue']
+        for col in numeric_cols:
+            if col in df.columns and not df[col].empty:
+                try:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                except Exception:
+                    pass  # Skip columns that can't be converted
+
         return df
 
     except Exception as e:
         st.error(f"Failed to load data from HuggingFace: {e}")
+        st.info("Dataset URL: https://huggingface.co/datasets/spark-dd4g/odp-metadata-health")
+
+        # Check if it's an authentication error
+        if "401" in str(e) or "403" in str(e) or "unauthorized" in str(e).lower():
+            st.warning("⚠️ The dataset appears to be private. Please make it public at the dataset settings page.")
+
+        import traceback
+        with st.expander("Show full error details"):
+            st.code(traceback.format_exc())
+
         return pd.DataFrame()
 
 
@@ -227,6 +255,12 @@ if 'approval_counter' not in st.session_state:
     # Used to force re-renders when approvals change
 
 df = load_data()
+
+# Check if data loaded successfully
+if df.empty:
+    st.error("⚠️ No data available. The dataset may be temporarily unavailable.")
+    st.info("Please try refreshing the page in a few minutes.")
+    st.stop()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -326,13 +360,18 @@ with tab1:
     fig_missing.update_layout(coloraxis_showscale=False)
     c2.plotly_chart(fig_missing, use_container_width=True)
 
-    fig_hist = px.histogram(filtered, x="health_score", nbins=20,
-                            title="Health Score Distribution",
-                            labels={"health_score": "Health Score"},
-                            color_discrete_sequence=["#3498db"])
-    fig_hist.add_vline(x=60, line_dash="dash", line_color="orange", annotation_text="Fair threshold")
-    fig_hist.add_vline(x=80, line_dash="dash", line_color="green",  annotation_text="Good threshold")
-    st.plotly_chart(fig_hist, use_container_width=True)
+    # Filter out NaN values for histogram
+    filtered_health = filtered[filtered["health_score"].notna()].copy()
+    if not filtered_health.empty:
+        fig_hist = px.histogram(filtered_health, x="health_score", nbins=20,
+                                title="Health Score Distribution",
+                                labels={"health_score": "Health Score"},
+                                color_discrete_sequence=["#3498db"])
+        fig_hist.add_vline(x=60, line_dash="dash", line_color="orange", annotation_text="Fair threshold")
+        fig_hist.add_vline(x=80, line_dash="dash", line_color="green",  annotation_text="Good threshold")
+        st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.info("No health score data available for histogram.")
 
     if filtered["department"].notna().any():
         dept_health = (filtered.groupby("department")["health_score"]
