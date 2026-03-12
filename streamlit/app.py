@@ -1,11 +1,12 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import json
 import os
 from datetime import datetime, timezone
 import plotly.express as px
 import plotly.graph_objects as go
+from datasets import load_dataset
+from typing import Optional
 
 st.set_page_config(
     page_title="Cambridge Open Data — Health Monitor",
@@ -13,9 +14,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-BASE_DIR = os.environ.get("BASE_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DB_PATH  = os.path.join(BASE_DIR, "data", "cambridge_metadata.db")
 
 st.markdown("""
 <style>
@@ -31,138 +29,254 @@ BAND_COLORS = {"Critical": "#e74c3c", "Poor": "#e67e22", "Fair": "#f1c40f", "Goo
 BAND_EMOJI  = {"Critical": "●", "Poor": "●", "Fair": "●", "Good": "●"}
 
 
-@st.cache_data(ttl=300)
-def load_data() -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql("""
-        SELECT DISTINCT
-            d.id, d.name, d.description, d.department, d.category,
-            d.license, d.tags, d.updatedAt, d.dataUpdatedAt,
-            d.updateFrequency, d.createdAt,
-            h.health_score, h.health_band,
-            h.missing_description, h.missing_tags, h.missing_license,
-            h.missing_department, h.missing_category,
-            h.is_stale, h.days_overdue, h.freshness_score,
-            h.desc_score, h.tag_score, h.license_score,
-            l.llm_desc_score, l.llm_desc_feedback,
-            l.llm_suggested_desc, l.llm_suggested_tags,l.llm_tag_alignment_note,l.llm_status
-        FROM datasets d
-        LEFT JOIN health_flags h ON d.id = h.id
-        LEFT JOIN llm_results  l ON d.id = l.id
-    """, conn)
-    conn.close()
-    
-    # Convert binary columns (0/1) to human-readable "Yes"/"No" for display
-    binary_cols = ['missing_description', 'missing_tags', 'missing_license', 
-                   'missing_department', 'missing_category', 'is_stale']
-    for col in binary_cols:
-        if col in df.columns:
-            df[col] = df[col].map({1: "Yes", 0: "No"})
-    
+# ── Data Transformation Helper Functions ──────────────────────────────────────
+def _rename_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename columns from CSV schema to app-expected schema."""
+    rename_map = {
+        'dataset_id': 'id',
+        'title': 'name',
+        'update_frequency': 'updateFrequency',
+        'data_updated_at': 'dataUpdatedAt',
+        'updated_at': 'updatedAt',
+        'created_at': 'createdAt',
+        'overall_health_score': 'health_score',
+        'overall_health_label': 'health_band',
+        'description_score': 'llm_desc_score',
+        'description_feedback': 'llm_desc_feedback',
+        'description_suggestion': 'llm_suggested_desc',
+        'tag_suggestion': 'llm_suggested_tags',
+        'tag_feedback': 'llm_tag_alignment_note'
+    }
+
+    # Only rename columns that exist and won't create duplicates
+    safe_rename = {}
+    for old_name, new_name in rename_map.items():
+        if old_name in df.columns and new_name not in df.columns:
+            safe_rename[old_name] = new_name
+
+    df = df.rename(columns=safe_rename)
+
+    # Handle tag_score specially: use tags_count_score if tag_score doesn't exist
+    if 'tag_score' not in df.columns and 'tags_count_score' in df.columns:
+        df['tag_score'] = df['tags_count_score']
+
     return df
 
 
-@st.cache_data(ttl=300)
-def load_last_run() -> str:
+def _scale_scores(df: pd.DataFrame) -> pd.DataFrame:
+    """Scale scores from 0.0-1.0 range to 0-100 range."""
+    if 'health_score' in df.columns:
+        # Handle None/NaN values - convert to numeric first
+        df['health_score'] = pd.to_numeric(df['health_score'], errors='coerce')
+        df['health_score'] = (df['health_score'] * 100).round(1)
+    if 'freshness_score' in df.columns:
+        df['freshness_score'] = pd.to_numeric(df['freshness_score'], errors='coerce')
+        df['freshness_score'] = (df['freshness_score'] * 100).round(1)
+    return df
+
+
+def _is_tags_missing(tags_value) -> str:
+    """Check if tags field is empty/null."""
+    if pd.isna(tags_value):
+        return "Yes"
+    if not tags_value or tags_value == "[]" or tags_value == "":
+        return "Yes"
     try:
-        conn = sqlite3.connect(DB_PATH)
-        row  = conn.execute(
-            "SELECT finished_at, datasets_fetched FROM pipeline_runs ORDER BY started_at DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
-        if row:
-            ts = row[0][:19].replace("T", " ") if row[0] else "Unknown"
-            return f"Last refresh: {ts} UTC  |  {row[1]} datasets"
-        return "No pipeline run recorded yet"
-    except Exception:
-        return "Pipeline run data unavailable"
+        tags_list = json.loads(tags_value) if isinstance(tags_value, str) else tags_value
+        return "No" if tags_list and len(tags_list) > 0 else "Yes"
+    except:
+        return "Yes"
 
 
-def cleanup_approvals_duplicates():
-    """Remove duplicate approval records, keeping only the latest per dataset"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Check if table exists first
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='human_approvals'")
-        if cursor.fetchone():
-            # Delete duplicates, keep the one with the latest timestamp
-            conn.execute("""
-                DELETE FROM human_approvals 
-                WHERE (dataset_id, rowid) NOT IN (
-                    SELECT dataset_id, MAX(rowid) 
-                    FROM human_approvals 
-                    GROUP BY dataset_id
-                )
-            """)
-            conn.commit()
-        conn.close()
-    except Exception:
-        pass
-
-
-def save_approval(dataset_id, approved_desc, approved_tags, status, reviewer, note=""):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS human_approvals (
-            dataset_id TEXT PRIMARY KEY,
-            approved_description TEXT,
-            approved_tags TEXT,
-            human_status TEXT,
-            reviewed_by TEXT, 
-            reviewed_at TEXT, 
-            edit_note TEXT
-        )
-    """)
-    
-    # Check if record exists
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM human_approvals WHERE dataset_id = ?", (dataset_id,))
-    exists = cursor.fetchone()[0] > 0
-    
-    if exists:
-        # Update existing record
-        conn.execute("""
-            UPDATE human_approvals
-            SET approved_description = ?, approved_tags = ?, 
-                human_status = ?, reviewed_by = ?, reviewed_at = ?, edit_note = ?
-            WHERE dataset_id = ?
-        """, (approved_desc, approved_tags, status, reviewer, 
-              datetime.now(timezone.utc).isoformat(), note, dataset_id))
+def _calculate_desc_score(description) -> float:
+    """
+    Calculate description quality score based on length.
+    Heuristic: 0 chars: 0 points, 1-50: 25, 51-150: 50, 151-300: 75, 300+: 100
+    """
+    if pd.isna(description) or not description:
+        return 0.0
+    length = len(str(description))
+    if length == 0:
+        return 0.0
+    elif length <= 50:
+        return 25.0
+    elif length <= 150:
+        return 50.0
+    elif length <= 300:
+        return 75.0
     else:
-        # Insert new record
-        conn.execute("""
-            INSERT INTO human_approvals
-            (dataset_id, approved_description, approved_tags,
-             human_status, reviewed_by, reviewed_at, edit_note)
-            VALUES (?,?,?,?,?,?,?)
-        """, (dataset_id, approved_desc, approved_tags, status,
-              reviewer, datetime.now(timezone.utc).isoformat(), note))
-    
-    # Also update llm_status in llm_results table to reflect the approval decision
-    # pending_review → approved, edited, or rejected
-    conn.execute("""
-        UPDATE llm_results
-        SET llm_status = ?
-        WHERE id = ?
-    """, (status, dataset_id))
-    
-    conn.commit()
-    conn.close()
+        return 100.0
+
+
+def _calculate_derived_fields(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate fields that don't exist in CSV but are needed by app."""
+    # Binary flag conversions (0/1 → "No"/"Yes")
+    if 'description_exists' in df.columns:
+        df['missing_description'] = df['description_exists'].apply(
+            lambda x: "No" if x == 1 else "Yes"
+        )
+
+    if 'license_exists' in df.columns:
+        df['missing_license'] = df['license_exists'].apply(
+            lambda x: "No" if x == 1 else "Yes"
+        )
+        df['license_score'] = df['license_exists'].apply(
+            lambda x: 100 if x == 1 else 0
+        )
+
+    if 'department_exists' in df.columns:
+        df['missing_department'] = df['department_exists'].apply(
+            lambda x: "No" if x == 1 else "Yes"
+        )
+
+    if 'category_exists' in df.columns:
+        df['missing_category'] = df['category_exists'].apply(
+            lambda x: "No" if x == 1 else "Yes"
+        )
+
+    # Tags handling
+    if 'tags' in df.columns:
+        df['missing_tags'] = df['tags'].apply(_is_tags_missing)
+
+    # Staleness calculation
+    if 'days_overdue' in df.columns:
+        df['is_stale'] = df['days_overdue'].apply(
+            lambda x: "Yes" if pd.notna(x) and x > 0 else "No"
+        )
+
+    # Description score heuristic
+    if 'description' in df.columns:
+        df['desc_score'] = df['description'].apply(_calculate_desc_score)
+
+    # LLM status
+    if 'llm_suggested_desc' in df.columns:
+        df['llm_status'] = df['llm_suggested_desc'].apply(
+            lambda x: "pending_review" if pd.notna(x) and str(x).strip() else "not_evaluated"
+        )
+
+    # Capitalize health_band values
+    if 'health_band' in df.columns:
+        df['health_band'] = df['health_band'].str.capitalize()
+
+    return df
+
+
+@st.cache_data(ttl=3600)
+def load_data() -> pd.DataFrame:
+    """
+    Load and transform data from HuggingFace dataset.
+
+    Returns:
+        Transformed DataFrame matching the expected schema for the app
+    """
+    try:
+        # Step 1: Load Parquet from HuggingFace (public dataset)
+        dataset = load_dataset(
+            "spark-dd4g/odp-metadata-health",
+            split="train",
+            cache_dir=None
+        )
+        df = dataset.to_pandas()
+
+        # Debug: Print available columns
+        print(f"Loaded {len(df)} rows")
+        print(f"Available columns: {df.columns.tolist()}")
+
+        # Step 2: Column Renames
+        df = _rename_columns(df)
+        print(f"Columns after rename: {df.columns.tolist()}")
+
+        # Step 3: Scale Numeric Fields
+        df = _scale_scores(df)
+
+        # Step 4: Calculate Missing Fields
+        df = _calculate_derived_fields(df)
+
+        # Step 5: Ensure numeric columns are proper numeric types (only if they exist)
+        numeric_cols = ['health_score', 'freshness_score', 'llm_desc_score',
+                       'tag_score', 'desc_score', 'license_score', 'days_overdue']
+        for col in numeric_cols:
+            if col in df.columns and not df[col].empty:
+                try:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                except Exception:
+                    pass  # Skip columns that can't be converted
+
+        return df
+
+    except Exception as e:
+        st.error(f"Failed to load data from HuggingFace: {e}")
+        st.info("Dataset URL: https://huggingface.co/datasets/spark-dd4g/odp-metadata-health")
+
+        # Check if it's an authentication error
+        if "401" in str(e) or "403" in str(e) or "unauthorized" in str(e).lower():
+            st.warning("⚠️ The dataset appears to be private. Please make it public at the dataset settings page.")
+
+        import traceback
+        with st.expander("Show full error details"):
+            st.code(traceback.format_exc())
+
+        return pd.DataFrame()
+
+
+def save_approval(dataset_id: str, approved_desc: Optional[str],
+                 approved_tags: Optional[str], status: str,
+                 reviewer: str, note: str = "") -> None:
+    """
+    Save approval decision to session state (replaces SQLite writes).
+
+    Args:
+        dataset_id: Dataset ID
+        approved_desc: Approved description text (or None if rejected)
+        approved_tags: Approved tags JSON (or None if rejected)
+        status: One of 'approved', 'edited', 'rejected'
+        reviewer: Name of reviewer
+        note: Optional reviewer note
+    """
+    st.session_state.human_approvals[dataset_id] = {
+        'approved_description': approved_desc,
+        'approved_tags': approved_tags,
+        'human_status': status,
+        'reviewed_by': reviewer,
+        'reviewed_at': datetime.now(timezone.utc).isoformat(),
+        'edit_note': note
+    }
+
+    # Increment counter to force re-render
+    st.session_state.approval_counter += 1
 
 
 def to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
 
 
+# Initialize session state for human approvals
+if 'human_approvals' not in st.session_state:
+    st.session_state.human_approvals = {}
+    # Structure: {dataset_id: {
+    #   'approved_description': str,
+    #   'approved_tags': str,
+    #   'human_status': str,  # 'approved', 'edited', 'rejected'
+    #   'reviewed_by': str,
+    #   'reviewed_at': str (ISO format),
+    #   'edit_note': str
+    # }}
+
+if 'approval_counter' not in st.session_state:
+    st.session_state.approval_counter = 0
+    # Used to force re-renders when approvals change
+
 df = load_data()
-cleanup_approvals_duplicates()  # Remove old duplicate approvals when app starts
+
+# Check if data loaded successfully
+if df.empty:
+    st.error("⚠️ No data available. The dataset may be temporarily unavailable.")
+    st.info("Please try refreshing the page in a few minutes.")
+    st.stop()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### Cambridge Open Data\n**Metadata Health Monitor**")
-    st.caption(load_last_run())
     st.markdown("---")
     st.markdown("#### Filters")
 
@@ -184,7 +298,7 @@ with st.sidebar:
     no_tags_only = st.toggle("Missing tags only", value=False)
 
     st.markdown("---")
-    st.caption("Cambridge Open Data Portal\nReinhard Engels, Open Data Program")
+    st.caption("Cambridge Open Data Portal\nReinhard Engels, Open Data Program\n\nData refreshed daily from pipeline")
 
 # Apply filters
 filtered = df.copy()
@@ -258,13 +372,18 @@ with tab1:
     fig_missing.update_layout(coloraxis_showscale=False)
     c2.plotly_chart(fig_missing, use_container_width=True)
 
-    fig_hist = px.histogram(filtered, x="health_score", nbins=20,
-                            title="Health Score Distribution",
-                            labels={"health_score": "Health Score"},
-                            color_discrete_sequence=["#3498db"])
-    fig_hist.add_vline(x=60, line_dash="dash", line_color="orange", annotation_text="Fair threshold")
-    fig_hist.add_vline(x=80, line_dash="dash", line_color="green",  annotation_text="Good threshold")
-    st.plotly_chart(fig_hist, use_container_width=True)
+    # Filter out NaN values for histogram
+    filtered_health = filtered[filtered["health_score"].notna()].copy()
+    if not filtered_health.empty:
+        fig_hist = px.histogram(filtered_health, x="health_score", nbins=20,
+                                title="Health Score Distribution",
+                                labels={"health_score": "Health Score"},
+                                color_discrete_sequence=["#3498db"])
+        fig_hist.add_vline(x=60, line_dash="dash", line_color="orange", annotation_text="Fair threshold")
+        fig_hist.add_vline(x=80, line_dash="dash", line_color="green",  annotation_text="Good threshold")
+        st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.info("No health score data available for histogram.")
 
     if filtered["department"].notna().any():
         dept_health = (filtered.groupby("department")["health_score"]
@@ -427,36 +546,37 @@ with tab5:
     ]
     available_cols = [c for c in export_cols if c in filtered.columns]
     export_df = filtered[available_cols].sort_values("health_score")
-    
-    # Add human approval status from human_approvals table
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        # Get approval status and approved description
-        approvals_df = pd.read_sql("""
-            SELECT DISTINCT dataset_id, human_status, approved_description
-            FROM human_approvals
-        """, conn)
-        conn.close()
-        
-        if not approvals_df.empty:
-            approvals_df.columns = ["id", "approval_status", "approved_description"]
-            # Use merge with how='left' to avoid creating duplicates
-            export_df = export_df.merge(approvals_df, on="id", how="left")
-        else:
-            export_df["approval_status"] = None
-            export_df["approved_description"] = None
-    except Exception:
-        export_df["approval_status"] = None
-        export_df["approved_description"] = None
-    
+
+    # Add human approval status from session state
+    if st.session_state.human_approvals:
+        # Convert session state to DataFrame
+        approvals_data = []
+        for dataset_id, approval in st.session_state.human_approvals.items():
+            approvals_data.append({
+                'id': dataset_id,
+                'approval_status': approval['human_status'],
+                'approved_description': approval['approved_description']
+            })
+
+        approvals_df = pd.DataFrame(approvals_data)
+
+        # Merge with export data
+        export_df = export_df.merge(approvals_df, on='id', how='left')
+    else:
+        # No approvals in session state
+        export_df['approval_status'] = None
+        export_df['approved_description'] = None
+
     # Fill pending approvals
-    export_df["approval_status"] = export_df["approval_status"].fillna("pending")
-    
-    # Use approved description if it exists, otherwise use AI suggested description
-    export_df["llm_suggested_desc"] = export_df["approved_description"].fillna(export_df["llm_suggested_desc"])
-    
+    export_df['approval_status'] = export_df['approval_status'].fillna("pending")
+
+    # Use approved description if exists, otherwise use AI suggestion
+    export_df['llm_suggested_desc'] = export_df['approved_description'].fillna(
+        export_df['llm_suggested_desc']
+    )
+
     # Drop the approved_description column since we merged it into llm_suggested_desc
-    export_df = export_df.drop(columns=["approved_description"], errors="ignore")
+    export_df = export_df.drop(columns=['approved_description'], errors='ignore')
     
     # Rename columns for clarity
     export_df = export_df.rename(columns={
