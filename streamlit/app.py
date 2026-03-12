@@ -35,7 +35,7 @@ BAND_EMOJI  = {"Critical": "●", "Poor": "●", "Fair": "●", "Good": "●"}
 def load_data() -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql("""
-        SELECT
+        SELECT DISTINCT
             d.id, d.name, d.description, d.department, d.category,
             d.license, d.tags, d.updatedAt, d.dataUpdatedAt,
             d.updateFrequency, d.createdAt,
@@ -78,23 +78,76 @@ def load_last_run() -> str:
         return "Pipeline run data unavailable"
 
 
+def cleanup_approvals_duplicates():
+    """Remove duplicate approval records, keeping only the latest per dataset"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Check if table exists first
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='human_approvals'")
+        if cursor.fetchone():
+            # Delete duplicates, keep the one with the latest timestamp
+            conn.execute("""
+                DELETE FROM human_approvals 
+                WHERE (dataset_id, rowid) NOT IN (
+                    SELECT dataset_id, MAX(rowid) 
+                    FROM human_approvals 
+                    GROUP BY dataset_id
+                )
+            """)
+            conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def save_approval(dataset_id, approved_desc, approved_tags, status, reviewer, note=""):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS human_approvals (
-            approval_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            dataset_id TEXT, approved_description TEXT,
-            approved_tags TEXT, human_status TEXT,
-            reviewed_by TEXT, reviewed_at TEXT, edit_note TEXT
+            dataset_id TEXT PRIMARY KEY,
+            approved_description TEXT,
+            approved_tags TEXT,
+            human_status TEXT,
+            reviewed_by TEXT, 
+            reviewed_at TEXT, 
+            edit_note TEXT
         )
     """)
+    
+    # Check if record exists
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM human_approvals WHERE dataset_id = ?", (dataset_id,))
+    exists = cursor.fetchone()[0] > 0
+    
+    if exists:
+        # Update existing record
+        conn.execute("""
+            UPDATE human_approvals
+            SET approved_description = ?, approved_tags = ?, 
+                human_status = ?, reviewed_by = ?, reviewed_at = ?, edit_note = ?
+            WHERE dataset_id = ?
+        """, (approved_desc, approved_tags, status, reviewer, 
+              datetime.now(timezone.utc).isoformat(), note, dataset_id))
+    else:
+        # Insert new record
+        conn.execute("""
+            INSERT INTO human_approvals
+            (dataset_id, approved_description, approved_tags,
+             human_status, reviewed_by, reviewed_at, edit_note)
+            VALUES (?,?,?,?,?,?,?)
+        """, (dataset_id, approved_desc, approved_tags, status,
+              reviewer, datetime.now(timezone.utc).isoformat(), note))
+    
+    # Also update llm_status in llm_results table to reflect the approval decision
+    # pending_review → approved, edited, or rejected
     conn.execute("""
-        INSERT INTO human_approvals
-        (dataset_id, approved_description, approved_tags,
-         human_status, reviewed_by, reviewed_at, edit_note)
-        VALUES (?,?,?,?,?,?,?)
-    """, (dataset_id, approved_desc, approved_tags, status,
-          reviewer, datetime.now(timezone.utc).isoformat(), note))
+        UPDATE llm_results
+        SET llm_status = ?
+        WHERE id = ?
+    """, (status, dataset_id))
+    
     conn.commit()
     conn.close()
 
@@ -104,6 +157,7 @@ def to_csv_bytes(df: pd.DataFrame) -> bytes:
 
 
 df = load_data()
+cleanup_approvals_duplicates()  # Remove old duplicate approvals when app starts
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -374,6 +428,45 @@ with tab5:
     available_cols = [c for c in export_cols if c in filtered.columns]
     export_df = filtered[available_cols].sort_values("health_score")
     
+    # Add human approval status from human_approvals table
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        # Get approval status and approved description
+        approvals_df = pd.read_sql("""
+            SELECT DISTINCT dataset_id, human_status, approved_description
+            FROM human_approvals
+        """, conn)
+        conn.close()
+        
+        if not approvals_df.empty:
+            approvals_df.columns = ["id", "approval_status", "approved_description"]
+            # Use merge with how='left' to avoid creating duplicates
+            export_df = export_df.merge(approvals_df, on="id", how="left")
+        else:
+            export_df["approval_status"] = None
+            export_df["approved_description"] = None
+    except Exception:
+        export_df["approval_status"] = None
+        export_df["approved_description"] = None
+    
+    # Fill pending approvals
+    export_df["approval_status"] = export_df["approval_status"].fillna("pending")
+    
+    # Use approved description if it exists, otherwise use AI suggested description
+    export_df["llm_suggested_desc"] = export_df["approved_description"].fillna(export_df["llm_suggested_desc"])
+    
+    # Drop the approved_description column since we merged it into llm_suggested_desc
+    export_df = export_df.drop(columns=["approved_description"], errors="ignore")
+    
+    # Rename columns for clarity
+    export_df = export_df.rename(columns={
+        "llm_status": "AI Review Status",
+        "llm_desc_score": "AI Score",
+        "llm_desc_feedback": "AI Feedback",
+        "llm_suggested_desc": "AI Suggested Description",
+        "llm_suggested_tags": "AI Suggested Tags",
+        "approval_status": "Approved"
+    })
 
 
     def style_band(val):
