@@ -1,31 +1,31 @@
 name: Daily ETL Pipeline
 
 on:
-  schedule:
-    - cron: "0 2 * * *"
-  workflow_dispatch:
-    inputs:
-      ingest_only:
-        description: "Run ingest step only"
-        required: false
-        default: "false"
-      evaluate_only:
-        description: "Run evaluate step only"
-        required: false
-        default: "false"
-      dry_run:
-        description: "Preview without saving"
-        required: false
-        default: "false"
+schedule: - cron: "0 2 \* \* \*"
+workflow_dispatch:
+inputs:
+ingest_only:
+description: "Run ingest step only"
+required: false
+default: "false"
+evaluate_only:
+description: "Run evaluate step only"
+required: false
+default: "false"
+dry_run:
+description: "Preview without saving"
+required: false
+default: "false"
 
 # Added this to allow the Action to write back to your repo
+
 permissions:
-  contents: write
+contents: write
 
 jobs:
-  run-etl:
-    name: Execute ETL Pipeline
-    runs-on: ubuntu-latest
+run-etl:
+name: Execute ETL Pipeline
+runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
